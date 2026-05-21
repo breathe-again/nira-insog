@@ -10,7 +10,7 @@ interface Slice {
 export default function ExpenseDonut({ data }: { data: Slice[] }) {
   const total = data.reduce((s, d) => s + d.value, 0);
   return (
-    <div className="flex items-center gap-6">
+    <div className="flex items-center gap-4 min-w-0">
       <div className="h-44 w-44 shrink-0 relative">
         <ResponsiveContainer>
           <PieChart>
@@ -44,18 +44,20 @@ export default function ExpenseDonut({ data }: { data: Slice[] }) {
           </div>
         </div>
       </div>
-      <ul className="flex-1 space-y-1.5">
+      <ul className="flex-1 min-w-0 space-y-1.5">
         {data.map((d) => {
           const pct = total === 0 ? 0 : (d.value / total) * 100;
           return (
             <li key={d.name} className="flex items-center gap-2 text-sm">
               <span
-                className="h-2.5 w-2.5 rounded-sm"
+                className="h-2.5 w-2.5 rounded-sm shrink-0"
                 style={{ backgroundColor: d.color }}
               />
-              <span className="text-ink-700 flex-1 truncate">{d.name}</span>
-              <span className="text-ink-500 text-xs tabular">{pct.toFixed(0)}%</span>
-              <span className="text-ink-900 font-medium tabular w-16 text-right">
+              <span className="text-ink-700 flex-1 truncate min-w-0">{d.name}</span>
+              <span className="text-ink-500 text-xs tabular shrink-0 w-10 text-right">
+                {pct.toFixed(0)}%
+              </span>
+              <span className="text-ink-900 font-medium tabular shrink-0 w-20 text-right whitespace-nowrap">
                 {formatINRShort(d.value)}
               </span>
             </li>
