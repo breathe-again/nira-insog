@@ -14,8 +14,32 @@ packages:
   - ufw
   - git
   - jq
+  # fail2ban: bans IPs after repeated SSH brute-force attempts.
+  # Important since we expose port 22 to 0.0.0.0/0 (key-auth only, no passwords).
+  - fail2ban
 
 write_files:
+  # Lock SSH down to key-only auth. Ubuntu cloud images already do this, but
+  # making it explicit (and overrideable) protects against future image changes.
+  - path: /etc/ssh/sshd_config.d/99-nira-secure.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      ChallengeResponseAuthentication no
+      PermitRootLogin no
+      MaxAuthTries 3
+
+  # fail2ban — quietly ban brute-forcers after 5 failed attempts.
+  - path: /etc/fail2ban/jail.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      port = 22
+      maxretry = 5
+      bantime = 600
+      findtime = 600
+
   - path: /etc/systemd/system/nira-insig.service
     permissions: "0644"
     content: |
@@ -80,6 +104,11 @@ runcmd:
   - ufw allow 80/tcp
   - ufw allow 443/tcp
   - ufw --force enable
+
+  # ---- Apply SSH hardening + start fail2ban ----
+  - systemctl reload ssh || systemctl reload sshd || true
+  - systemctl enable fail2ban
+  - systemctl restart fail2ban
 
   # ---- Systemd unit ready (do NOT start — .env.prod is still a template) ----
   - systemctl daemon-reload
