@@ -42,12 +42,18 @@ interface CategoryRow {
   [category: string]: number | string;
 }
 
+/** Raw shape from the server — flattened into CategoryRow inside CategoryChart. */
+interface RawCategoryRow {
+  date: string;
+  categories: Record<string, number>;
+}
+
 interface Props {
   mode: CashFlowMode;
   /** "net" + "anomaly" modes use this. */
   data: Row[];
   /** "category" mode uses this (one entry per day, with arbitrary cat keys). */
-  categoryData?: CategoryRow[];
+  categoryData?: RawCategoryRow[];
   /** Ordered [name, color] tuples for the stack — comes from server. */
   categoryPalette?: [string, string][];
   /** Dates ("MMM d") with an active urgent/attention insight. */
@@ -257,7 +263,7 @@ function CategoryChart({
   tickFormatter,
   recurringDays,
 }: {
-  data: CategoryRow[];
+  data: RawCategoryRow[];
   palette: [string, string][];
   isLongRange: boolean;
   tickFormatter: (v: string) => string;
