@@ -34,6 +34,13 @@ services:
     image: nira-insig-api:latest
     container_name: nira-api
     restart: unless-stopped
+    # Disable IPv6 inside the container so psycopg / libpq doesn't try to use
+    # an AAAA record before the A record. The EC2 has no IPv6 outbound, so a
+    # v6 connect attempt fails fast with "Network is unreachable" and libpq
+    # doesn't fall back to IPv4. Forcing v4-only DNS sidesteps that.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -56,6 +63,10 @@ services:
     image: nira-insig-api:latest        # same image as api
     container_name: nira-worker
     restart: unless-stopped
+    # See `api.sysctls` above — same reasoning, the worker also talks to Neon.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
     entrypoint: []                       # skip alembic; api ran it
     command: celery -A worker.app.celery_app worker --loglevel=info --concurrency=2
     environment:
