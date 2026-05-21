@@ -53,7 +53,7 @@ data "aws_subnets" "default" {
 # Latest Ubuntu 24.04 LTS AMI for the region (Canonical's official account).
 data "aws_ami" "ubuntu_2404" {
   most_recent = true
-  owners      = ["099720109477"]  # Canonical
+  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
@@ -75,7 +75,7 @@ data "aws_ami" "ubuntu_2404" {
 
 resource "aws_security_group" "app" {
   name        = "${var.project_name}-sg"
-  description = "Nira Insig — allow SSH from your IP and HTTP(S) from anywhere"
+  description = "Nira Insig - allow SSH from your IP and HTTP/HTTPS from anywhere"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -87,7 +87,7 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description = "HTTP (Let's Encrypt + redirect to https)"
+    description = "HTTP (ACME challenge + redirect to https)"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -138,7 +138,7 @@ resource "aws_instance" "app" {
   key_name                    = var.key_pair_name
   associate_public_ip_address = true
   user_data                   = local.cloud_init
-  user_data_replace_on_change = false  # don't rebuild on cloud-init edits
+  user_data_replace_on_change = false # don't rebuild on cloud-init edits
 
   root_block_device {
     volume_type           = "gp3"
@@ -148,7 +148,7 @@ resource "aws_instance" "app" {
   }
 
   metadata_options {
-    http_tokens   = "required"  # IMDSv2 only
+    http_tokens   = "required" # IMDSv2 only
     http_endpoint = "enabled"
   }
 

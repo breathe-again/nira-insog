@@ -1,7 +1,9 @@
-# Environment
+# Environment — never commit real secrets, but DO commit example templates.
 .env
 .env.*
 !.env.example
+!.env.*.example
+!**/.env.*.example
 
 # Python
 __pycache__/
