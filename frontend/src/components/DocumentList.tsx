@@ -1,4 +1,4 @@
-import { FileSpreadsheet, FileText, Image as ImageIcon, Files } from "lucide-react";
+import { FileSpreadsheet, FileText, Image as ImageIcon, Globe, Files } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { DocumentOut, FileType, DocumentType } from "../types";
 import StatusBadge from "./StatusBadge";
@@ -9,6 +9,7 @@ const ICON_FOR: Record<FileType, typeof FileText> = {
   image: ImageIcon,
   csv: FileSpreadsheet,
   xlsx: FileSpreadsheet,
+  html: Globe,
 };
 
 const TYPE_LABEL: Record<DocumentType, string> = {
