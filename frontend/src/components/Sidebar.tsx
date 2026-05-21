@@ -6,6 +6,7 @@ import {
   LogOut,
   type LucideIcon,
   Settings,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useAuth } from "../contexts/AuthContext";
@@ -23,6 +24,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/", label: "Dashboard", Icon: LayoutDashboard },
       { to: "/inbox", label: "Inbox", Icon: Inbox },
+      { to: "/insights", label: "Insights", Icon: Sparkles },
     ],
   },
   {

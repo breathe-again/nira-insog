@@ -125,6 +125,11 @@ export interface InsightOut {
   dismissed_at: string | null;
 }
 
+export interface InsightListOut {
+  items: InsightOut[];
+  total: number;
+}
+
 export interface DashboardSummaryOut {
   cash_position: KpiOut;
   receivables: KpiOut;

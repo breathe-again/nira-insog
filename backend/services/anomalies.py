@@ -297,16 +297,20 @@ def _maybe_emit(
             return None  # already flagged
 
     pct_above = ((float(amount) - mu) / mu * 100.0) if mu > 0 else 0.0
+    multiple = (float(amount) / mu) if mu > 0 else 0.0
 
     insight = Insight(
         org_id=org_id,
         type="vendor_amount_anomaly",
         severity=severity,
         title=f"Unusual payment to {vendor.name}",
-        body=(
-            f"₹{amount:,.2f} on {observed_on.isoformat()} is "
-            f"{pct_above:+.0f}% vs the typical ₹{mu:,.2f} "
-            f"(n={n}, σ=₹{sigma:,.2f}, z={z:.1f})."
+        body=_humanize_anomaly_body(
+            amount=amount,
+            mu=mu,
+            multiple=multiple,
+            pct_above=pct_above,
+            vendor_name=vendor.name,
+            observed_on=observed_on,
         ),
         supporting_data={
             "source_entity": source_entity,
@@ -319,6 +323,11 @@ def _maybe_emit(
             "z_score": round(z, 2),
             "sample_size": n,
             "observed_on": observed_on.isoformat(),
+            # Stash the technical version too for the "Why this insight?"
+            # detail pane (Phase C). Frontend can show on hover/click.
+            "technical": (
+                f"+{pct_above:.0f}% vs typical (n={n}, σ=₹{sigma:,.2f}, z={z:.1f})"
+            ),
         },
     )
     db.add(insight)
@@ -334,4 +343,75 @@ def _maybe_emit(
         sample_size=n,
         severity=severity,
         insight_id=insight.id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Human-facing formatting
+# ---------------------------------------------------------------------------
+
+
+def _format_inr(amount: float) -> str:
+    """Format an amount in Indian-style: ₹1.05 Cr, ₹46.0 L, ₹85,000, ₹450.
+
+    Crore  >= 1,00,00,000  (1e7)
+    Lakh   >= 1,00,000     (1e5)
+    Below 1 Lakh: comma-grouped rupees with no paise.
+    """
+    a = abs(float(amount))
+    sign = "-" if amount < 0 else ""
+    if a >= 1e7:
+        return f"{sign}₹{a / 1e7:.2f} Cr"
+    if a >= 1e5:
+        return f"{sign}₹{a / 1e5:.1f} L"
+    # Indian comma grouping for < 1 Lakh: e.g. 85,000  not  85,000
+    # (The Indian system would write 12,34,567 but at < 1L the western form
+    # is identical, so plain {:,.0f} suffices.)
+    return f"{sign}₹{a:,.0f}"
+
+
+_MONTHS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def _format_date_human(d: date) -> str:
+    """Format a date as 'Apr 22, 2025' — short, unambiguous, no ISO ugliness."""
+    return f"{_MONTHS[d.month - 1]} {d.day}, {d.year}"
+
+
+def _humanize_anomaly_body(
+    *,
+    amount: Decimal,
+    mu: float,
+    multiple: float,
+    pct_above: float,
+    vendor_name: str,
+    observed_on: date,
+) -> str:
+    """Build a plain-English description of an anomaly insight.
+
+    Examples produced:
+      - "₹1.00 Cr to SGB on Apr 22, 2025 — about 5× your usual payment
+         (typically around ₹21.0 L)."
+      - "₹85,000 to Cafe Coffee Day on May 12, 2026 — roughly 3× your usual
+         spend at this vendor (typically around ₹28,000)."
+    """
+    amount_str = _format_inr(float(amount))
+    typical_str = _format_inr(mu)
+    date_str = _format_date_human(observed_on)
+
+    # Choose a human comparison: prefer multiples for big spikes (>= 2×),
+    # else use the percentage.
+    if multiple >= 10:
+        comparison = f"about {multiple:.0f}× your usual payment"
+    elif multiple >= 2:
+        comparison = f"about {multiple:.1f}× your usual payment"
+    else:
+        comparison = f"about {pct_above:.0f}% above your usual payment"
+
+    return (
+        f"{amount_str} to {vendor_name} on {date_str} — "
+        f"{comparison} (typically around {typical_str})."
     )

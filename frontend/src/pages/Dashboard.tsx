@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Banknote,
@@ -351,10 +352,10 @@ export default function Dashboard() {
             subtitle={vm.insights.length ? "Live feed · top 4" : "Will populate as data lands"}
             action={
               vm.insights.length > 0 ? (
-                <button className="btn-ghost text-xs">
+                <Link to="/insights" className="btn-ghost text-xs">
                   See all
                   <ArrowRight className="h-3 w-3" />
-                </button>
+                </Link>
               ) : null
             }
           >

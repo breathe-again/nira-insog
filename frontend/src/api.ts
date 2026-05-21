@@ -16,6 +16,7 @@ import type {
   DocumentDetailOut,
   DocumentListOut,
   DocumentOut,
+  InsightListOut,
   TokensOut,
 } from "./types";
 
@@ -176,6 +177,26 @@ export const api = {
     ),
 
   // ---------- Insights ----------
+  listInsights: (
+    params: {
+      severity?: string;
+      type?: string;
+      include_dismissed?: boolean;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.severity) q.set("severity", params.severity);
+    if (params.type) q.set("type", params.type);
+    if (params.include_dismissed) q.set("include_dismissed", "true");
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    if (params.offset !== undefined) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return request<InsightListOut>(`/api/insights${qs ? `?${qs}` : ""}`);
+  },
+  dismissInsight: (id: string) =>
+    request<unknown>(`/api/insights/${id}/dismiss`, { method: "POST" }),
   patchInsight: (id: string, body: { severity?: string; mute_vendor?: boolean }) =>
     request<{ updated: string[]; insight_id: string }>(`/api/insights/${id}`, {
       method: "PATCH",
