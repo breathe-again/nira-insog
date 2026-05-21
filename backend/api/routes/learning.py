@@ -28,6 +28,11 @@ from api.deps import current_org_id
 from common.db import get_db
 from common.models import BankTransaction, Insight, RecurringPattern, Vendor
 from services.anomalies import _adaptive_z_threshold, rehumanize_existing_insights
+from services.embeddings import (
+    backfill_org_embeddings,
+    coverage_stats,
+    fully_enabled as _embeddings_fully_enabled,
+)
 from services.forecasting import seasonal_forecast
 from services.recurring import (
     emit_missed_payment_insights,
@@ -66,11 +71,28 @@ class ForecastPreviewPoint(BaseModel):
     is_recurring_day: bool  # true if any pattern fires on this day-of-month
 
 
+class EmbeddingCoverageOut(BaseModel):
+    enabled: bool
+    total: int
+    embedded: int
+    coverage_pct: float
+
+
+class BackfillEmbeddingsOut(BaseModel):
+    enabled: bool
+    embedded: int
+    total: int
+    skipped_reason: Optional[str] = None
+
+
 class LearningStatusOut(BaseModel):
     # Volume
     bank_txn_count: int
     vendor_count: int
     insight_count: int
+
+    # Tier 2 embeddings coverage
+    embedding_coverage: EmbeddingCoverageOut
 
     # Trained
     pattern_count: int
@@ -289,10 +311,19 @@ def learning_status(
     z = _adaptive_z_threshold(db, org_id=org_id)
     cv = _compute_cv(db, org_id=org_id)
 
+    cov = coverage_stats(db, org_id=org_id)
+    embedding_coverage = EmbeddingCoverageOut(
+        enabled=_embeddings_fully_enabled(db),
+        total=cov["total"],
+        embedded=cov["embedded"],
+        coverage_pct=cov["coverage_pct"],
+    )
+
     return LearningStatusOut(
         bank_txn_count=bank_txn_count,
         vendor_count=vendor_count,
         insight_count=insight_count,
+        embedding_coverage=embedding_coverage,
         pattern_count=pattern_count,
         tagged_txn_count=tagged_txn_count,
         auto_categorized_count=auto_categorized_count,
@@ -303,6 +334,34 @@ def learning_status(
         threshold_explanation=_explain_threshold(z, cv),
         patterns=_build_pattern_rows(db, org_id=org_id),
         forecast_preview=_build_forecast_preview(db, org_id=org_id),
+    )
+
+
+@router.post(
+    "/backfill-embeddings",
+    response_model=BackfillEmbeddingsOut,
+    summary="Embed every transaction (Tier 2 — semantic vendor matching)",
+)
+def backfill_embeddings(
+    db: Session = Depends(get_db),
+    org_id: uuid.UUID = Depends(current_org_id),
+) -> BackfillEmbeddingsOut:
+    """One-shot: embed every BankTransaction whose vector is still NULL.
+    Idempotent — safe to re-run; only fills gaps. Synchronous, takes
+    ~30 seconds per 100 txns on a t3.medium."""
+    if not _embeddings_fully_enabled(db):
+        return BackfillEmbeddingsOut(
+            enabled=False,
+            embedded=0,
+            total=0,
+            skipped_reason="Embeddings disabled — needs sentence-transformers + pgvector",
+        )
+    result = backfill_org_embeddings(db, org_id=org_id)
+    return BackfillEmbeddingsOut(
+        enabled=True,
+        embedded=result["embedded"],
+        total=result["total"],
+        skipped_reason=result.get("skipped_reason"),
     )
 
 

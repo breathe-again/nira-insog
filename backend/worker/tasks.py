@@ -68,6 +68,11 @@ from services.recurring import (
     tag_recurring_transactions,
     upsert_patterns,
 )
+from services.embeddings import (
+    embed_batch as _embed_batch,
+    is_enabled as _embeddings_enabled,
+    set_txn_embedding as _set_txn_embedding,
+)
 from services.vendors import resolve_client, resolve_vendor
 
 logger = logging.getLogger(__name__)
@@ -210,6 +215,10 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
         inserted.append(txn)
 
     db.flush()
+
+    # Stage 3a: embed descriptions for the freshly-inserted txns (Tier 2).
+    # Bulk-embed in one batch — much faster than per-row.
+    _embed_new_txns(db, inserted)
 
     # Stage 3b: re-learn recurring patterns over the org's full history and
     # tag the freshly-inserted rows that match.
@@ -370,7 +379,8 @@ def _run_extracted(db: Session, doc: Document) -> dict:
         db.flush()
         entities_created = len(inserted)
 
-        # Recurring detection + tag fresh rows
+        # Embed and recurring detection + tag fresh rows.
+        _embed_new_txns(db, inserted)
         upsert_patterns(db, org_id=doc.org_id)
         tag_recurring_transactions(db, org_id=doc.org_id, txns=inserted)
 
@@ -455,6 +465,23 @@ def _persist_receipt(db: Session, doc: Document, draft: ReceiptDraft) -> Receipt
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+
+def _embed_new_txns(db: Session, inserted: list[BankTransaction]) -> None:
+    """Embed the descriptions of freshly-inserted bank txns in one batch.
+    Safe no-op when sentence-transformers isn't installed."""
+    if not inserted or not _embeddings_enabled():
+        return
+    try:
+        texts = [t.description or "" for t in inserted]
+        vectors = _embed_batch(texts)
+        if vectors is None:
+            return
+        for txn, vec in zip(inserted, vectors):
+            _set_txn_embedding(db, txn_id=txn.id, vector=vec)
+        db.flush()
+    except Exception:  # noqa: BLE001 — never fail the pipeline on embedding errors
+        logger.exception("failed to embed newly inserted txns; continuing")
 
 
 def _local_path(file_url: str) -> Optional[Path]:

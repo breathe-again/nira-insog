@@ -164,6 +164,7 @@ export interface LearningStatusOut {
   bank_txn_count: number;
   vendor_count: number;
   insight_count: number;
+  embedding_coverage: EmbeddingCoverageOut;
   pattern_count: number;
   tagged_txn_count: number;
   auto_categorized_count: number;
@@ -183,6 +184,40 @@ export interface RetrainOut {
   auto_categorized: number;
   rehumanized_insights: number;
   ran_at: string;
+}
+
+// ---------- Embeddings + semantic search ----------
+
+export interface SearchHitOut {
+  id: string;
+  txn_date: string | null;
+  amount: string | null;
+  direction: string | null;
+  description: string;
+  matched_vendor_id: string | null;
+  category: string | null;
+  distance: number | null;
+}
+
+export interface SearchOut {
+  query: string;
+  enabled: boolean;
+  count: number;
+  hits: SearchHitOut[];
+}
+
+export interface EmbeddingCoverageOut {
+  enabled: boolean;
+  total: number;
+  embedded: number;
+  coverage_pct: number;
+}
+
+export interface BackfillEmbeddingsOut {
+  enabled: boolean;
+  embedded: number;
+  total: number;
+  skipped_reason?: string | null;
 }
 
 export interface DashboardSummaryOut {

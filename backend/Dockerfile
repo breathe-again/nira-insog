@@ -18,6 +18,11 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
+# Pre-download the sentence-transformers model so the image is self-contained
+# and the first request doesn't pay the ~80MB download latency. Cached layer
+# stays warm across rebuilds when requirements.txt hasn't changed.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
 COPY . .
 
 # Make the entrypoint executable (works even if host bit is missing).

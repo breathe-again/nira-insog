@@ -36,6 +36,7 @@ from common.models import (
     BankTransaction,
     Document,
     Insight,
+    Invoice,
     Receipt,
     Vendor,
     VendorMute,
@@ -101,12 +102,15 @@ def patch_document(
 
     # ---- vendor_id ----------------------------------------------------
     # We update whichever linked entity exists for this doc — Receipt,
-    # Invoice (purchase), or BankTransaction's matched_vendor_id.
+    # Invoice (purchase-side), and every BankTransaction the document
+    # produced. All three get FeedbackEvent rows so the learning layer
+    # picks up the signal.
     if body.vendor_id is not None:
         vendor = db.get(Vendor, body.vendor_id)
         if vendor is None or vendor.org_id != current.org_id:
             raise HTTPException(status_code=404, detail="vendor not found")
 
+        # Receipt re-link
         receipt = db.execute(
             select(Receipt).where(Receipt.document_id == doc.id)
         ).scalar_one_or_none()
@@ -123,6 +127,53 @@ def patch_document(
             )
             receipt.vendor_id = vendor.id
             changes.append("receipt.vendor_id")
+
+        # Invoice re-link (purchase-side only — sales invoices use client_id,
+        # not vendor_id; that's a separate route's responsibility).
+        invoices = list(db.scalars(
+            select(Invoice).where(
+                Invoice.document_id == doc.id,
+                Invoice.type == "purchase",
+            )
+        ))
+        for inv in invoices:
+            if inv.vendor_id != vendor.id:
+                feedback.record_event(
+                    db,
+                    org_id=current.org_id,
+                    user_id=current.id,
+                    entity_type="invoice",
+                    entity_id=inv.id,
+                    field="vendor_id",
+                    old_value=inv.vendor_id,
+                    new_value=vendor.id,
+                )
+                inv.vendor_id = vendor.id
+                changes.append("invoice.vendor_id")
+
+        # BankTransaction re-link — bank-statement docs produce many txns.
+        # We re-assign all of them; the user can re-correct individual rows
+        # via a future per-txn edit endpoint.
+        txns = list(db.scalars(
+            select(BankTransaction).where(BankTransaction.document_id == doc.id)
+        ))
+        txn_changes = 0
+        for txn in txns:
+            if txn.matched_vendor_id != vendor.id:
+                feedback.record_event(
+                    db,
+                    org_id=current.org_id,
+                    user_id=current.id,
+                    entity_type="bank_transaction",
+                    entity_id=txn.id,
+                    field="matched_vendor_id",
+                    old_value=txn.matched_vendor_id,
+                    new_value=vendor.id,
+                )
+                txn.matched_vendor_id = vendor.id
+                txn_changes += 1
+        if txn_changes:
+            changes.append(f"bank_transaction.matched_vendor_id × {txn_changes}")
 
     # ---- category -----------------------------------------------------
     if body.category is not None:

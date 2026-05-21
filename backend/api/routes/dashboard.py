@@ -278,13 +278,17 @@ def dashboard_summary(
         or 0
     )
 
-    # ------------ KPI: Net flow (month-to-date) ------------
+    # ------------ KPI: Net flow over the selected window ------------
+    # "MTD" is the legacy label — it's really "net flow over whatever window
+    # the user selected." When no date filter is set, window_start = month_start
+    # and the behavior matches the original MTD semantics.
     mtd_credits = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(BankTransaction.amount), 0)).where(
                 BankTransaction.org_id == org_id,
                 BankTransaction.direction == "credit",
-                BankTransaction.txn_date >= month_start,
+                BankTransaction.txn_date >= window_start,
+                BankTransaction.txn_date <= window_end,
             )
         )
         or 0
@@ -294,23 +298,22 @@ def dashboard_summary(
             select(func.coalesce(func.sum(BankTransaction.amount), 0)).where(
                 BankTransaction.org_id == org_id,
                 BankTransaction.direction == "debit",
-                BankTransaction.txn_date >= month_start,
+                BankTransaction.txn_date >= window_start,
+                BankTransaction.txn_date <= window_end,
             )
         )
         or 0
     )
     net_flow_now = mtd_credits - mtd_debits
 
-    # Prior month for delta: previous month-to-same-day.
-    prev_month_start = (month_start - timedelta(days=1)).replace(day=1)
-    prev_month_cutoff = prev_month_start + timedelta(days=today.day - 1)
+    # Comparison: equal-length window immediately before the current one.
     prev_credits = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(BankTransaction.amount), 0)).where(
                 BankTransaction.org_id == org_id,
                 BankTransaction.direction == "credit",
-                BankTransaction.txn_date >= prev_month_start,
-                BankTransaction.txn_date <= prev_month_cutoff,
+                BankTransaction.txn_date >= prev_window_start,
+                BankTransaction.txn_date <= prev_window_end,
             )
         )
         or 0
@@ -320,8 +323,8 @@ def dashboard_summary(
             select(func.coalesce(func.sum(BankTransaction.amount), 0)).where(
                 BankTransaction.org_id == org_id,
                 BankTransaction.direction == "debit",
-                BankTransaction.txn_date >= prev_month_start,
-                BankTransaction.txn_date <= prev_month_cutoff,
+                BankTransaction.txn_date >= prev_window_start,
+                BankTransaction.txn_date <= prev_window_end,
             )
         )
         or 0
@@ -360,7 +363,8 @@ def dashboard_summary(
         )
         .where(
             BankTransaction.org_id == org_id,
-            BankTransaction.txn_date >= thirty_days_ago,
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
         )
         .group_by(BankTransaction.txn_date, BankTransaction.direction)
     ).all()
@@ -371,9 +375,12 @@ def dashboard_summary(
         key = "in" if direction == "credit" else "out"
         by_day[d][key] += Decimal(amt or 0)
 
+    # Chart length = the actual window the user selected (1 day to ~1 year).
+    # Cap at 366 to keep response size bounded if someone picks 5 years.
+    span_days = min(366, max(1, (window_end - window_start).days + 1))
     cash_flow: list[CashFlowPointOut] = []
-    for i in range(30):
-        d = thirty_days_ago + timedelta(days=i)
+    for i in range(span_days):
+        d = window_start + timedelta(days=i)
         cell = by_day.get(d, {"in": Decimal("0"), "out": Decimal("0")})
         cash_flow.append(
             CashFlowPointOut(
@@ -384,7 +391,7 @@ def dashboard_summary(
             )
         )
 
-    # ------------ Expense breakdown (this month, by category) ------------
+    # ------------ Expense breakdown (selected window, by category) ------------
     expense_rows = db.execute(
         select(
             BankTransaction.description,
@@ -395,7 +402,8 @@ def dashboard_summary(
         .where(
             BankTransaction.org_id == org_id,
             BankTransaction.direction == "debit",
-            BankTransaction.txn_date >= month_start,
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
         )
     ).all()
     cat_totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
@@ -441,7 +449,7 @@ def dashboard_summary(
         AgingBucketOut(bucket=b, amount=a) for b, a in aging_buckets.items()
     ]
 
-    # ------------ Top vendors (this month, by debit spend) ------------
+    # ------------ Top vendors (selected window, by debit spend) ------------
     vendor_rows = db.execute(
         select(
             Vendor.name,
@@ -451,15 +459,14 @@ def dashboard_summary(
         .where(
             BankTransaction.org_id == org_id,
             BankTransaction.direction == "debit",
-            BankTransaction.txn_date >= month_start,
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
         )
         .group_by(Vendor.name)
         .order_by(desc("amt"))
         .limit(5)
     ).all()
-    # Same query for the previous month, for delta.
-    prev_month_end = month_start - timedelta(days=1)
-    prev_month_first = prev_month_end.replace(day=1)
+    # Comparison: the equal-length window immediately before this one.
     vendor_prev_map: dict[str, Decimal] = {}
     for name, amt in db.execute(
         select(
@@ -470,8 +477,8 @@ def dashboard_summary(
         .where(
             BankTransaction.org_id == org_id,
             BankTransaction.direction == "debit",
-            BankTransaction.txn_date >= prev_month_first,
-            BankTransaction.txn_date <= prev_month_end,
+            BankTransaction.txn_date >= prev_window_start,
+            BankTransaction.txn_date <= prev_window_end,
         )
         .group_by(Vendor.name)
     ).all():
@@ -486,7 +493,7 @@ def dashboard_summary(
         for name, amt in vendor_rows
     ]
 
-    # ------------ Top clients (this month, by credit inflow) ------------
+    # ------------ Top clients (selected window, by credit inflow) ------------
     client_rows = db.execute(
         select(
             Client.name,
@@ -496,7 +503,8 @@ def dashboard_summary(
         .where(
             BankTransaction.org_id == org_id,
             BankTransaction.direction == "credit",
-            BankTransaction.txn_date >= month_start,
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
         )
         .group_by(Client.name)
         .order_by(desc("amt"))
@@ -509,8 +517,8 @@ def dashboard_summary(
         .where(
             BankTransaction.org_id == org_id,
             BankTransaction.direction == "credit",
-            BankTransaction.txn_date >= prev_month_first,
-            BankTransaction.txn_date <= prev_month_end,
+            BankTransaction.txn_date >= prev_window_start,
+            BankTransaction.txn_date <= prev_window_end,
         )
         .group_by(Client.name)
     ).all():

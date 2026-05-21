@@ -7,6 +7,7 @@ import Inbox from "./pages/Inbox";
 import DocumentDetail from "./pages/DocumentDetail";
 import Insights from "./pages/Insights";
 import Learning from "./pages/Learning";
+import Search from "./pages/Search";
 import Health from "./pages/Health";
 import Settings from "./pages/Settings";
 import Login from "./pages/Login";
@@ -31,6 +32,7 @@ export default function App() {
               <Route path="inbox/:id" element={<DocumentDetail />} />
               <Route path="insights" element={<Insights />} />
               <Route path="learning" element={<Learning />} />
+              <Route path="search" element={<Search />} />
               <Route path="system" element={<Health />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />

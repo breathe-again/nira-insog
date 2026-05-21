@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  Boxes,
   CheckCircle2,
   Clock,
   Database,
@@ -47,6 +48,8 @@ export default function Learning() {
   const [error, setError] = useState<string | null>(null);
   const [retraining, setRetraining] = useState(false);
   const [lastRetrain, setLastRetrain] = useState<RetrainOut | null>(null);
+  const [embedding, setEmbedding] = useState(false);
+  const [lastEmbedResult, setLastEmbedResult] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -64,6 +67,29 @@ export default function Learning() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  async function handleBackfillEmbeddings() {
+    setEmbedding(true);
+    setError(null);
+    setLastEmbedResult(null);
+    try {
+      const result = await api.backfillEmbeddings();
+      if (!result.enabled) {
+        setLastEmbedResult(
+          result.skipped_reason ?? "Embeddings are not enabled on the server.",
+        );
+      } else {
+        setLastEmbedResult(
+          `Embedded ${result.embedded} of ${result.total} transactions.`,
+        );
+      }
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Backfill failed");
+    } finally {
+      setEmbedding(false);
+    }
+  }
 
   async function handleRetrain() {
     setRetraining(true);
@@ -85,19 +111,35 @@ export default function Learning() {
         title="Learning & Training"
         subtitle="What the system has learned from your data"
         actions={
-          <button
-            type="button"
-            onClick={handleRetrain}
-            disabled={retraining}
-            className="inline-flex items-center gap-2 px-3 h-9 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
-          >
-            {retraining ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-            {retraining ? "Retraining…" : "Retrain on existing data"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleBackfillEmbeddings}
+              disabled={embedding}
+              className="inline-flex items-center gap-2 px-3 h-9 rounded-lg ring-1 ring-ink-200 bg-white text-sm font-medium text-ink-800 hover:bg-ink-50 disabled:opacity-50"
+              title="Compute semantic embeddings for every transaction"
+            >
+              {embedding ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Boxes className="h-4 w-4" />
+              )}
+              {embedding ? "Embedding…" : "Backfill embeddings"}
+            </button>
+            <button
+              type="button"
+              onClick={handleRetrain}
+              disabled={retraining}
+              className="inline-flex items-center gap-2 px-3 h-9 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+            >
+              {retraining ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              {retraining ? "Retraining…" : "Retrain on existing data"}
+            </button>
+          </div>
         }
       />
 
@@ -105,6 +147,13 @@ export default function Learning() {
         {error && (
           <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 text-rose-700 px-4 py-3 text-sm">
             {error}
+          </div>
+        )}
+
+        {lastEmbedResult && (
+          <div className="rounded-xl bg-brand-50 ring-1 ring-brand-200 text-brand-800 px-4 py-3 text-sm flex items-center gap-2">
+            <Boxes className="h-4 w-4" />
+            <span>{lastEmbedResult}</span>
           </div>
         )}
 
@@ -166,6 +215,46 @@ export default function Learning() {
                 tone="amber"
                 hint={`${status.anomaly_insight_count} anomalies · ${status.missed_payment_insight_count} missed`}
               />
+            </div>
+
+            {/* Embedding coverage — Tier 2 */}
+            <div className="bg-white rounded-2xl ring-1 ring-ink-200 p-5">
+              <div className="flex items-start gap-3">
+                <div className="h-10 w-10 rounded-xl bg-violet-50 text-violet-700 flex items-center justify-center shrink-0">
+                  <Boxes className="h-5 w-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-ink-900">
+                        Semantic search coverage
+                      </div>
+                      <div className="text-xs text-ink-500 mt-0.5">
+                        {status.embedding_coverage.enabled
+                          ? "Each transaction has a vector embedding for semantic search and vendor matching."
+                          : "Embeddings are not enabled — install sentence-transformers and redeploy."}
+                      </div>
+                    </div>
+                    <span className="text-2xl font-semibold text-ink-900 tabular">
+                      {status.embedding_coverage.coverage_pct.toFixed(0)}%
+                    </span>
+                  </div>
+                  <div className="mt-3 h-2 rounded-full bg-ink-100 overflow-hidden">
+                    <div
+                      className="h-full bg-violet-500 transition-all"
+                      style={{
+                        width: `${Math.min(100, status.embedding_coverage.coverage_pct)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="text-[11px] text-ink-500 mt-2 tabular">
+                    {status.embedding_coverage.embedded} of{" "}
+                    {status.embedding_coverage.total} transactions embedded.
+                    {status.embedding_coverage.coverage_pct < 100 &&
+                      " Click Backfill embeddings above to fill the rest."}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Adaptive threshold */}

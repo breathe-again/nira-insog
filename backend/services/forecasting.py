@@ -84,20 +84,28 @@ def seasonal_forecast(
         # No history at all — flat zero forecast.
         return _zero_forecast(starting_from, horizon_days)
 
-    # Bucket: day_of_month → list of net-flow values
-    by_dom: dict[int, list[float]] = {}
-    # Running daily net for fallback
-    running_total = 0.0
-    running_days: set[date] = set()
+    # Step 1: aggregate per-day net (credits minus debits) — one observation
+    # per CALENDAR DAY, not per transaction. Without this, a day with 10
+    # small debits would skew mean(history) by appearing as 10 separate
+    # data points; a day with 1 large outflow would barely register.
+    per_day_net: dict[date, float] = {}
     for txn_date, amount, direction in rows:
         a = float(amount)
         signed = a if direction == "credit" else -a
-        by_dom.setdefault(txn_date.day, []).append(signed)
-        running_total += signed
-        running_days.add(txn_date)
+        per_day_net[txn_date] = per_day_net.get(txn_date, 0.0) + signed
 
+    # Step 2: bucket those per-day nets by day-of-month so seasonality is
+    # learned at the right granularity.
+    by_dom: dict[int, list[float]] = {}
+    for d, net in per_day_net.items():
+        by_dom.setdefault(d.day, []).append(net)
+
+    # Fallback: average across all observed days (not all calendar days in
+    # the window — days with zero activity shouldn't dilute the mean).
     fallback_daily = (
-        running_total / max(1, len(running_days)) if running_days else 0.0
+        sum(per_day_net.values()) / max(1, len(per_day_net))
+        if per_day_net
+        else 0.0
     )
 
     out: list[ForecastPoint] = []

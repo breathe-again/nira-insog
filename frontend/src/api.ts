@@ -12,6 +12,7 @@
 import type {
   ApiHealth,
   AuthMeOut,
+  BackfillEmbeddingsOut,
   DashboardSummaryOut,
   DocumentDetailOut,
   DocumentListOut,
@@ -19,6 +20,7 @@ import type {
   InsightListOut,
   LearningStatusOut,
   RetrainOut,
+  SearchOut,
   TokensOut,
 } from "./types";
 
@@ -216,6 +218,16 @@ export const api = {
   // ---------- Learning ----------
   learningStatus: () => request<LearningStatusOut>("/api/learning/status"),
   retrain: () => request<RetrainOut>("/api/learning/retrain", { method: "POST" }),
+  backfillEmbeddings: () =>
+    request<BackfillEmbeddingsOut>("/api/learning/backfill-embeddings", {
+      method: "POST",
+    }),
+
+  // ---------- Semantic search ----------
+  search: (q: string, limit = 20) => {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    return request<SearchOut>(`/api/search?${params.toString()}`);
+  },
 };
 
 export { API_BASE };

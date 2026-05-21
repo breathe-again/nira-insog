@@ -42,3 +42,12 @@ argon2-cffi==23.1.0
 pyjwt==2.9.0
 cryptography==43.0.1
 slowapi==0.1.9
+
+# Tier 2 — semantic embeddings.
+# all-MiniLM-L6-v2: 384 dims, ~80MB weights, CPU-friendly, $0 per-request cost.
+# Used for: similarity-based vendor merging, semantic transaction search,
+# and recurring-pattern detection over variable-amount payments.
+# torch is pulled in as a transitive dep — keep --no-deps off so wheels arrive.
+sentence-transformers==2.7.0
+# pgvector ORM adapter so we can use the `vector` column type in SQLAlchemy.
+pgvector==0.3.6
