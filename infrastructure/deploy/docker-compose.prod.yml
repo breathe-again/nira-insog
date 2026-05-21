@@ -78,10 +78,11 @@ services:
     build:
       context: ../../frontend
       dockerfile: Dockerfile.prod
-    environment:
-      # The frontend talks to the API via Caddy on the same host, so it uses
-      # the public origin (which Caddy proxies to api:8000).
-      VITE_API_BASE: https://${PUBLIC_HOST}
+      # CRITICAL: VITE_API_BASE must be a BUILD arg, not a runtime env var.
+      # Vite inlines it into the bundle at build time; setting it as
+      # `environment` does nothing — the browser would call localhost.
+      args:
+        VITE_API_BASE: https://${PUBLIC_HOST}
     # No ports exposed — caddy reverse-proxies to it.
 
   caddy:

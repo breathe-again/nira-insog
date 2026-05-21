@@ -13,7 +13,14 @@ ARG VITE_API_BASE
 ENV VITE_API_BASE=${VITE_API_BASE}
 
 COPY package.json package-lock.json* ./
-RUN npm ci --no-audit --no-fund
+# `npm ci` is faster and reproducible when a lockfile is present.
+# Fall back to `npm install` if the lockfile is somehow missing (won't happen
+# in this repo, but defensive: e.g. someone deletes it mid-deploy).
+RUN if [ -f package-lock.json ]; then \
+        npm ci --no-audit --no-fund; \
+    else \
+        npm install --no-audit --no-fund; \
+    fi
 
 COPY . .
 RUN npm run build

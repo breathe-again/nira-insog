@@ -37,6 +37,18 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
+  # ---- Swap (helps the Vite/npm build avoid OOM on t3.small's 2 GB RAM) ----
+  - |
+    if [ ! -f /swapfile ]; then
+      fallocate -l 2G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo "/swapfile none swap sw 0 0" >> /etc/fstab
+      echo "vm.swappiness=10" >> /etc/sysctl.conf
+      sysctl -p
+    fi
+
   # ---- Docker installation ----
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
