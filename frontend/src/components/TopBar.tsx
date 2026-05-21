@@ -1,4 +1,5 @@
 import { Bell, Search, UserRound } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
 
 interface Props {
   /** The page title shown on the left of the top bar. */
@@ -10,6 +11,14 @@ interface Props {
 }
 
 export default function TopBar({ title, subtitle, actions }: Props) {
+  const { user } = useAuth();
+  // Role + org pulled from the JWT-backed AuthContext. Falls back to friendly
+  // defaults when the page is rendered pre-auth (e.g. during initial bootstrap).
+  const roleLabel = user
+    ? user.role.charAt(0).toUpperCase() + user.role.slice(1)
+    : "Signed out";
+  const orgLabel = user?.org_name ?? "—";
+
   return (
     <header className="h-14 px-6 bg-white ring-1 ring-ink-200 flex items-center justify-between">
       <div>
@@ -42,9 +51,16 @@ export default function TopBar({ title, subtitle, actions }: Props) {
           <div className="h-8 w-8 rounded-full bg-gradient-to-br from-brand-400 to-brand-700 text-white flex items-center justify-center">
             <UserRound className="h-4 w-4" />
           </div>
-          <div className="leading-tight hidden sm:block">
-            <div className="text-xs font-semibold text-ink-900">Founder</div>
-            <div className="text-[10px] text-ink-500">Demo Org</div>
+          <div className="leading-tight hidden sm:block min-w-0">
+            <div className="text-xs font-semibold text-ink-900 truncate max-w-[140px]">
+              {roleLabel}
+            </div>
+            <div
+              className="text-[10px] text-ink-500 truncate max-w-[140px]"
+              title={orgLabel}
+            >
+              {orgLabel}
+            </div>
           </div>
         </div>
       </div>
