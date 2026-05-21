@@ -31,6 +31,7 @@ from services.anomalies import _adaptive_z_threshold, rehumanize_existing_insigh
 from services.forecasting import seasonal_forecast
 from services.recurring import (
     emit_missed_payment_insights,
+    rehumanize_missed_payment_insights,
     tag_recurring_transactions,
     upsert_patterns,
 )
@@ -349,8 +350,9 @@ def retrain(
     # 4) Missed-payment insights
     missed = emit_missed_payment_insights(db, org_id=org_id)
 
-    # 5) Rewrite legacy jargon-y anomaly insights with the humanized format.
+    # 5) Rewrite legacy jargon-y insight bodies in the latest plain English.
     rehumanized = rehumanize_existing_insights(db, org_id=org_id)
+    rehumanized += rehumanize_missed_payment_insights(db, org_id=org_id)
 
     db.commit()
     logger.info(

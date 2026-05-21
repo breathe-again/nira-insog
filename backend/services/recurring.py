@@ -382,6 +382,60 @@ def _expected_next_date(pat: RecurringPattern, *, as_of: date) -> Optional[date]
         return date(year, month, 28)
 
 
+def rehumanize_missed_payment_insights(
+    db: Session, *, org_id: uuid.UUID, as_of: Optional[date] = None
+) -> int:
+    """Walk every existing `recurring_payment_missed` insight for the org
+    and rewrite its `body` text in the latest conversational format.
+
+    Idempotent. Used by /api/learning/retrain so old jargon-y bodies get
+    replaced in one click."""
+    if as_of is None:
+        as_of = date.today()
+    rows = list(db.scalars(
+        select(Insight).where(
+            Insight.org_id == org_id,
+            Insight.type == "recurring_payment_missed",
+        )
+    ).all())
+    rewritten = 0
+    for ins in rows:
+        sd = ins.supporting_data or {}
+        try:
+            label = str(sd.get("label") or "this vendor")
+            median = Decimal(str(sd.get("median_amount", "0")))
+            expected_iso = sd.get("expected_on")
+            if not expected_iso:
+                continue
+            y, m, d = (int(p) for p in str(expected_iso).split("-")[:3])
+            expected_on = date(y, m, d)
+        except (TypeError, ValueError, KeyError):
+            continue
+        days_late = (as_of - expected_on).days
+        if days_late < 0:
+            continue
+        expected_day = expected_on.day
+        amount_str = _format_inr_short(median)
+        if days_late < 10:
+            urgency = f"a few days behind ({days_late} days, to be exact)"
+        elif days_late < 35:
+            urgency = f"about {days_late} days overdue now"
+        else:
+            urgency = f"more than a month overdue ({days_late} days)"
+        new_body = (
+            f"Your {amount_str} payment to {label} normally goes out around "
+            f"the {_ordinal(expected_day)} of every month, but this cycle's "
+            f"payment hasn't shown up yet. It's {urgency}. Either the payment "
+            f"was paused, the bank statement isn't uploaded yet, or this "
+            f"needs your attention."
+        )
+        if new_body != ins.body:
+            ins.body = new_body
+            rewritten += 1
+    db.flush()
+    return rewritten
+
+
 def _ordinal(n: int) -> str:
     """1 → '1st', 2 → '2nd', 3 → '3rd', 11 → '11th', etc."""
     if 10 <= (n % 100) <= 20:

@@ -257,6 +257,29 @@ export default function Dashboard() {
   const payablesDelta = deltaLabel(vm.payablesTotal, vm.payablesPrev);
   const netFlowDelta = deltaLabel(vm.netFlowMtd, vm.netFlowMtdPrev);
 
+  // Friendly label for the current date range, used in widget subtitles so
+  // they no longer say "Last 30 days" when the user picked FY 25-26.
+  const rangeLabel = (() => {
+    if (demoMode) return "Last 30 days";
+    switch (dateRange.preset) {
+      case "this_month":
+        return "This month";
+      case "this_quarter":
+        return "This quarter";
+      case "fy_current":
+        return "This financial year";
+      case "fy_previous":
+        return "Last financial year";
+      case "last_30d":
+        return "Last 30 days";
+      case "last_90d":
+        return "Last 90 days";
+      case "custom":
+      default:
+        return `${dateRange.from} → ${dateRange.to}`;
+    }
+  })();
+
   const showRealEmptyBanner = !demoMode && !loading && !error && summary && !vm.hasAnyData;
 
   return (
@@ -363,13 +386,12 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           <SectionCard
             title="Cash flow"
-            subtitle="Last 30 days · inflow vs outflow"
+            subtitle={`${rangeLabel} · inflow vs outflow`}
             className="xl:col-span-2"
             action={
-              <button className="btn-ghost text-xs">
-                Last 30 days
-                <ArrowRight className="h-3 w-3" />
-              </button>
+              <span className="text-xs text-ink-500 tabular">
+                {rangeLabel}
+              </span>
             }
           >
             {vm.cashFlow.length > 0 ? (
@@ -379,7 +401,7 @@ export default function Dashboard() {
             )}
           </SectionCard>
 
-          <SectionCard title="Expense breakdown" subtitle="This month, by category">
+          <SectionCard title="Expense breakdown" subtitle={`${rangeLabel} · by category`}>
             {vm.expenseByCategory.length > 0 ? (
               <ExpenseDonut data={vm.expenseByCategory} />
             ) : (
