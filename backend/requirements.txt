@@ -23,3 +23,8 @@ rapidfuzz==3.10.1
 # Disabled at runtime if ANTHROPIC_API_KEY is unset — the worker falls back
 # to the stub payload so the rest of the pipeline still runs.
 anthropic==0.40.0
+
+# Fixes LLM-produced JSON that's almost-valid but has a stray quote / comma
+# (common with long bank-statement extractions). Used as a fallback after
+# stdlib json.loads fails.
+json-repair==0.30.3

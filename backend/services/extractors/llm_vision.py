@@ -32,8 +32,9 @@ logger = logging.getLogger(__name__)
 # Model — pinned to the latest Sonnet at time of writing.
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
-# Hard cap on response size (covers even long invoices with many line items).
-MAX_TOKENS = 4000
+# Hard cap on response size. Long bank statements with 100+ transactions
+# can hit ~8k tokens, so we generously allow 16k to avoid mid-JSON truncation.
+MAX_TOKENS = 16000
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +278,23 @@ def _parse_json(text: str) -> dict:
     try:
         parsed = json.loads(candidate)
     except json.JSONDecodeError as e:
+        # LLM JSON often has small flaws (stray comma, unescaped quote in a
+        # transaction narration, etc.). Try to repair before giving up.
+        try:
+            from json_repair import repair_json  # type: ignore
+
+            repaired = repair_json(candidate, return_objects=True)
+            if isinstance(repaired, dict):
+                logger.warning(
+                    "llm_vision: stdlib JSON parse failed (%s); json_repair recovered the payload",
+                    e,
+                )
+                return repaired
+        except ImportError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+
         raise ExtractorError(
             f"model returned non-JSON output: {e}; first 200 chars: {text[:200]!r}"
         ) from e
