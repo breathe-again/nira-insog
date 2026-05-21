@@ -13,14 +13,17 @@ ARG VITE_API_BASE
 ENV VITE_API_BASE=${VITE_API_BASE}
 
 COPY package.json package-lock.json* ./
-# `npm ci` is faster and reproducible when a lockfile is present.
-# Fall back to `npm install` if the lockfile is somehow missing (won't happen
-# in this repo, but defensive: e.g. someone deletes it mid-deploy).
-RUN if [ -f package-lock.json ]; then \
-        npm ci --no-audit --no-fund; \
-    else \
-        npm install --no-audit --no-fund; \
-    fi
+# We deliberately use `npm install` (not `npm ci`) here.
+#
+# Why: the lockfile was generated on macOS, which records mac-arm64 versions
+# of Rollup's optional native modules. Inside this Linux/musl container, npm ci
+# would refuse to install the Linux versions because they're not in the
+# lockfile — failing with "Cannot find module @rollup/rollup-linux-x64-musl".
+#
+# `npm install` lets npm pick the right platform-specific optional deps at
+# install time. We accept the slightly slower install for the cross-platform
+# correctness.
+RUN npm install --no-audit --no-fund
 
 COPY . .
 RUN npm run build
