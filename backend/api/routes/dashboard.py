@@ -38,6 +38,8 @@ from sqlalchemy.orm import Session
 from api.deps import current_org_id
 from api.schemas import (
     AgingBucketOut,
+    CashFlowCategoryPointOut,
+    CashFlowMetaOut,
     CashFlowPointOut,
     CategorySliceOut,
     ComplianceRowOut,
@@ -391,6 +393,80 @@ def dashboard_summary(
             )
         )
 
+    # ------------ Cash flow by category (advanced chart mode) ------------
+    # Daily breakdown of debits grouped by the same category buckets the
+    # donut uses. Lets the frontend stack-area "where my money went" by day.
+    cat_rows = db.execute(
+        select(
+            BankTransaction.txn_date,
+            BankTransaction.description,
+            BankTransaction.amount,
+            Vendor.name,
+        )
+        .outerjoin(Vendor, Vendor.id == BankTransaction.matched_vendor_id)
+        .where(
+            BankTransaction.org_id == org_id,
+            BankTransaction.direction == "debit",
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
+        )
+    ).all()
+
+    # day -> {category_name: amount}
+    by_day_cat: dict[date, dict[str, Decimal]] = defaultdict(
+        lambda: defaultdict(lambda: Decimal("0"))
+    )
+    # Track which categories actually appeared so the legend only shows real ones.
+    seen_cats: dict[str, str] = {}  # name → color
+    for d, desc_text, amt, vname in cat_rows:
+        cat_name, cat_color = _categorize(desc_text, vname)
+        by_day_cat[d][cat_name] += Decimal(amt or 0)
+        seen_cats.setdefault(cat_name, cat_color)
+
+    cash_flow_by_category: list[CashFlowCategoryPointOut] = []
+    for i in range(span_days):
+        d = window_start + timedelta(days=i)
+        cats = by_day_cat.get(d, {})
+        cash_flow_by_category.append(
+            CashFlowCategoryPointOut(
+                date=d.strftime("%b %-d"),
+                # Convert defaultdict → plain dict so Pydantic serializes cleanly.
+                categories={k: v for k, v in cats.items()},
+            )
+        )
+
+    # ------------ Cash flow meta — anomaly markers + category palette ------
+    # Set of "MMM d" dates that have a vendor_amount_anomaly insight in the
+    # selected window. Frontend draws red dots on these days.
+    anomaly_dates: list[str] = []
+    anomaly_rows = db.execute(
+        select(Insight.supporting_data).where(
+            Insight.org_id == org_id,
+            Insight.type == "vendor_amount_anomaly",
+            Insight.dismissed_at.is_(None),
+        )
+    ).all()
+    for (sd,) in anomaly_rows:
+        if not isinstance(sd, dict):
+            continue
+        iso_str = sd.get("observed_on")
+        if not iso_str:
+            continue
+        try:
+            y, m, day = (int(p) for p in str(iso_str).split("-")[:3])
+            occ_d = date(y, m, day)
+        except (ValueError, TypeError):
+            continue
+        if window_start <= occ_d <= window_end:
+            label = occ_d.strftime("%b %-d")
+            if label not in anomaly_dates:
+                anomaly_dates.append(label)
+
+    cash_flow_meta = CashFlowMetaOut(
+        anomaly_dates=anomaly_dates,
+        category_palette=sorted(seen_cats.items(), key=lambda kv: kv[0]),
+    )
+
     # ------------ Expense breakdown (selected window, by category) ------------
     expense_rows = db.execute(
         select(
@@ -698,6 +774,8 @@ def dashboard_summary(
         payables=kpis["payables"],
         net_flow_mtd=kpis["net_flow_mtd"],
         cash_flow=cash_flow,
+        cash_flow_by_category=cash_flow_by_category,
+        cash_flow_meta=cash_flow_meta,
         expense_breakdown=expense_breakdown,
         receivables_aging=receivables_aging,
         forecast=forecast,

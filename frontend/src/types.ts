@@ -140,6 +140,16 @@ export interface RecurringOutflowOut {
   days_until_due: number | null;
 }
 
+export interface CashFlowCategoryPointOut {
+  date: string;
+  categories: Record<string, string | number>;
+}
+
+export interface CashFlowMetaOut {
+  anomaly_dates: string[];
+  category_palette: [string, string][]; // tuples of (name, hex color)
+}
+
 // ---------- Learning ----------
 
 export interface PatternRowOut {
@@ -226,6 +236,8 @@ export interface DashboardSummaryOut {
   payables: KpiOut;
   net_flow_mtd: KpiOut;
   cash_flow: CashFlowPointOut[];
+  cash_flow_by_category?: CashFlowCategoryPointOut[];
+  cash_flow_meta?: CashFlowMetaOut;
   expense_breakdown: CategorySliceOut[];
   receivables_aging: AgingBucketOut[];
   forecast: ForecastPointOut[];

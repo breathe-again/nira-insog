@@ -14,7 +14,9 @@ import TopBar from "../components/TopBar";
 import StatCard from "../components/StatCard";
 import SectionCard from "../components/SectionCard";
 import InsightCard from "../components/InsightCard";
-import CashFlowChart from "../components/charts/CashFlowChart";
+import CashFlowChart, {
+  type CashFlowMode,
+} from "../components/charts/CashFlowChart";
 import ExpenseDonut from "../components/charts/ExpenseDonut";
 import ForecastChart from "../components/charts/ForecastChart";
 import RecurringOutflows from "../components/RecurringOutflows";
@@ -57,6 +59,15 @@ interface ViewModel {
   forecast: { date: string; forecast: number; lowerBand: number; upperBand: number }[];
   compliance: { status: "ok" | "warn" | "fail"; label: string }[];
   recurringOutflows: import("../types").RecurringOutflowOut[];
+  // Advanced cash-flow data — empty arrays when running on demo data.
+  cashFlowByCategory: { date: string; categories: Record<string, number> }[];
+  cashFlowMeta: {
+    anomalyDates: string[];
+    categoryPalette: [string, string][];
+  };
+  // Day-of-month numbers that have recurring patterns — used to draw vertical
+  // dashed reference lines on the chart.
+  recurringDays: number[];
   hasAnyData: boolean;
   isLive: boolean;        // true when from real API
   bankTxnCount: number;
@@ -105,6 +116,9 @@ function adaptDemo(): ViewModel {
         days_until_due: -19,
       },
     ],
+    cashFlowByCategory: [],
+    cashFlowMeta: { anomalyDates: [], categoryPalette: [] },
+    recurringDays: [5, 2],
     hasAnyData: true,
     isLive: false,
     bankTxnCount: 0,
@@ -161,6 +175,22 @@ function adaptSummary(s: DashboardSummaryOut): ViewModel {
     })),
     compliance: s.compliance.map((c) => ({ status: c.status, label: c.label })),
     recurringOutflows: s.recurring_outflows ?? [],
+    cashFlowByCategory: (s.cash_flow_by_category ?? []).map((p) => ({
+      date: p.date,
+      categories: Object.fromEntries(
+        Object.entries(p.categories).map(([k, v]) => [
+          k,
+          typeof v === "number" ? v : parseFloat(String(v)),
+        ]),
+      ),
+    })),
+    cashFlowMeta: {
+      anomalyDates: s.cash_flow_meta?.anomaly_dates ?? [],
+      categoryPalette: s.cash_flow_meta?.category_palette ?? [],
+    },
+    recurringDays: (s.recurring_outflows ?? [])
+      .map((r) => r.expected_day_of_month)
+      .filter((d): d is number => typeof d === "number"),
     hasAnyData: s.has_any_data,
     isLive: true,
     bankTxnCount: s.bank_txn_count,
@@ -176,6 +206,27 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<DashboardSummaryOut | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Cash-flow chart mode — Net flow / By category / With markers.
+  // Restored from localStorage so the founder doesn't have to re-pick.
+  const [cashFlowMode, setCashFlowMode] = useState<CashFlowMode>(() => {
+    try {
+      const stored = window.localStorage.getItem("nira:cashFlowMode");
+      if (stored === "net" || stored === "category" || stored === "anomaly") {
+        return stored;
+      }
+    } catch {
+      // ignore
+    }
+    return "net";
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("nira:cashFlowMode", cashFlowMode);
+    } catch {
+      // ignore
+    }
+  }, [cashFlowMode]);
 
   // Date-range filter (default: this month). Restored from localStorage so
   // the founder doesn't have to re-pick on every page load.
@@ -246,6 +297,9 @@ export default function Dashboard() {
       forecast: [],
       compliance: [],
       recurringOutflows: [],
+      cashFlowByCategory: [],
+      cashFlowMeta: { anomalyDates: [], categoryPalette: [] },
+      recurringDays: [],
       hasAnyData: false,
       isLive: true,
       bankTxnCount: 0,
@@ -386,18 +440,77 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           <SectionCard
             title="Cash flow"
-            subtitle={`${rangeLabel} · inflow vs outflow`}
+            subtitle={
+              cashFlowMode === "category"
+                ? `${rangeLabel} · stacked by category`
+                : cashFlowMode === "anomaly"
+                  ? `${rangeLabel} · with anomaly + recurring markers`
+                  : `${rangeLabel} · inflow vs outflow`
+            }
             className="xl:col-span-2"
             action={
-              <span className="text-xs text-ink-500 tabular">
-                {rangeLabel}
-              </span>
+              <div className="flex items-center gap-1 bg-ink-50 rounded-lg p-0.5">
+                {(["net", "category", "anomaly"] as CashFlowMode[]).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setCashFlowMode(m)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                      m === cashFlowMode
+                        ? "bg-white text-ink-900 shadow-sm ring-1 ring-ink-200"
+                        : "text-ink-600 hover:text-ink-900",
+                    )}
+                  >
+                    {m === "net"
+                      ? "Net flow"
+                      : m === "category"
+                        ? "By category"
+                        : "With markers"}
+                  </button>
+                ))}
+              </div>
             }
           >
             {vm.cashFlow.length > 0 ? (
-              <CashFlowChart data={vm.cashFlow} />
+              <CashFlowChart
+                mode={cashFlowMode}
+                data={vm.cashFlow}
+                categoryData={vm.cashFlowByCategory}
+                categoryPalette={vm.cashFlowMeta.categoryPalette}
+                anomalyDates={vm.cashFlowMeta.anomalyDates}
+                recurringDays={vm.recurringDays}
+              />
             ) : (
               <EmptyChart label="Upload a bank statement to see cash flow." />
+            )}
+            {cashFlowMode === "category" && vm.cashFlowMeta.categoryPalette.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-3 px-1">
+                {vm.cashFlowMeta.categoryPalette.map(([name, color]) => (
+                  <div
+                    key={name}
+                    className="flex items-center gap-1.5 text-[11px] text-ink-700"
+                  >
+                    <span
+                      className="h-2 w-2 rounded-sm"
+                      style={{ backgroundColor: color }}
+                    />
+                    {name}
+                  </div>
+                ))}
+              </div>
+            )}
+            {cashFlowMode === "anomaly" && (
+              <div className="flex items-center gap-3 mt-2 px-1 text-[11px] text-ink-600">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-rose-500" />
+                  Unusual payment
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-0.5 bg-amber-500" />
+                  Recurring payment day
+                </div>
+              </div>
             )}
           </SectionCard>
 

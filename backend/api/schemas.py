@@ -260,6 +260,28 @@ class RecurringOutflowOut(BaseModel):
     days_until_due: int | None = None
 
 
+class CashFlowCategoryPointOut(BaseModel):
+    """One day's stacked-by-category breakdown for the advanced chart mode.
+
+    `date` matches the same "MMM d" format the simple cash_flow uses, so the
+    two arrays can be cross-referenced by index. `categories` maps category
+    name → outflow amount that day (debits only)."""
+
+    date: str
+    categories: dict[str, Decimal] = Field(default_factory=dict)
+
+
+class CashFlowMetaOut(BaseModel):
+    """Auxiliary annotations for the cash flow chart — anomaly day markers
+    and the palette of category colours (so the frontend doesn't have to
+    duplicate the bucketing logic)."""
+
+    # Set of dates (same "MMM d" format) where any non-info insight fired.
+    anomaly_dates: list[str] = Field(default_factory=list)
+    # Ordered list of (category_name, hex_color) for the stacked chart legend.
+    category_palette: list[tuple[str, str]] = Field(default_factory=list)
+
+
 class DashboardSummaryOut(BaseModel):
     """Everything the Dashboard needs in one call.
 
@@ -275,6 +297,8 @@ class DashboardSummaryOut(BaseModel):
 
     # Charts
     cash_flow: list[CashFlowPointOut]
+    cash_flow_by_category: list[CashFlowCategoryPointOut] = Field(default_factory=list)
+    cash_flow_meta: CashFlowMetaOut = Field(default_factory=CashFlowMetaOut)
     expense_breakdown: list[CategorySliceOut]
     receivables_aging: list[AgingBucketOut]
     forecast: list[ForecastPointOut]
