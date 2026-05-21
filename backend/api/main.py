@@ -111,25 +111,47 @@ def create_app() -> FastAPI:
         except Exception as e:  # noqa: BLE001
             checks["postgres"] = f"error: {e.__class__.__name__}"
 
-        # Use a SYNC Redis client for the health check. The async client
-        # (redis.asyncio) has a known TLS handshake quirk with Upstash's
-        # `rediss://` endpoint that's unrelated to the broker actually working
-        # — Celery's sync client connects fine. Probing with the same client
-        # type Celery uses keeps the readiness signal honest.
+        # Use a SYNC Redis client + pre-parse `ssl_cert_reqs`.
+        #
+        # Celery accepts `?ssl_cert_reqs=CERT_REQUIRED` in the URL because it
+        # pre-processes the URL and converts that string to `ssl.CERT_REQUIRED`
+        # before handing it to redis-py. redis-py's own URL parser only
+        # accepts the lowercase short form ("required" / "optional" / "none")
+        # and chokes on "CERT_REQUIRED".
+        #
+        # We replicate Celery's behaviour here: strip the param from the URL
+        # and pass the ssl module constant as a kwarg.
         try:
-            import redis as redis_sync  # local import — only needed here
+            import ssl as _ssl
+            from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+            import redis as redis_sync
 
-            sync_client = redis_sync.from_url(
-                settings.redis_url,
-                decode_responses=True,
-                socket_connect_timeout=3,
-                socket_timeout=3,
-            )
+            parsed = urlparse(settings.redis_url)
+            qs = dict(parse_qsl(parsed.query))
+            cert_req_str = qs.pop("ssl_cert_reqs", None)
+            cert_req_const = None
+            if cert_req_str:
+                # Accept either form: "CERT_REQUIRED" or "required".
+                upper = cert_req_str.upper()
+                if not upper.startswith("CERT_"):
+                    upper = "CERT_" + upper
+                cert_req_const = getattr(_ssl, upper, _ssl.CERT_REQUIRED)
+            cleaned = urlunparse(parsed._replace(query=urlencode(qs)))
+
+            kwargs = {
+                "decode_responses": True,
+                "socket_connect_timeout": 3,
+                "socket_timeout": 3,
+            }
+            if cert_req_const is not None:
+                kwargs["ssl_cert_reqs"] = cert_req_const
+
+            sync_client = redis_sync.from_url(cleaned, **kwargs)
             pong = sync_client.ping()
             checks["redis"] = "ok" if pong else "error: no pong"
             sync_client.close()
         except Exception as e:  # noqa: BLE001
-            checks["redis"] = f"error: {e.__class__.__name__}"
+            checks["redis"] = f"error: {e.__class__.__name__}: {e}"[:200]
 
         overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
         return {"status": overall, "checks": checks}
