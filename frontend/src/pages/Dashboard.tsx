@@ -96,8 +96,8 @@ function adaptSummary(s: DashboardSummaryOut): ViewModel {
     netFlowMtdPrev: Number(s.net_flow_mtd.prev_value),
     cashFlow: s.cash_flow.map((p) => ({
       date: p.date,
-      in: Number(p.in_amount),
-      out: Number(p.out_amount),
+      in: Number(p.in),
+      out: Number(p.out),
       net: Number(p.net),
     })),
     receivablesAging: s.receivables_aging.map((b) => ({

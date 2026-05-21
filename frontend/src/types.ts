@@ -55,11 +55,13 @@ export interface KpiOut {
 
 export interface CashFlowPointOut {
   date: string;
-  // Backend uses in_amount/out_amount as field names because `in` is a
-  // Python keyword. Dashboard transforms these to {in, out} for the chart.
-  in_amount: number;
-  out_amount: number;
-  net: number;
+  // The backend uses Pydantic Field(alias="in") / Field(alias="out") so the
+  // wire format is `in` / `out` (NOT `in_amount` / `out_amount`).
+  // Values arrive as JSON strings (Decimal) — the Dashboard adapter coerces
+  // them to numbers before handing to recharts.
+  in: string | number;
+  out: string | number;
+  net: string | number;
 }
 
 export interface CategorySliceOut {
