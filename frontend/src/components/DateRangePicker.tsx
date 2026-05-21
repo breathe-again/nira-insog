@@ -40,7 +40,15 @@ interface Props {
 // ---------------------------------------------------------------------------
 
 function iso(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  // toISOString() converts to UTC, which silently shifts the date by a day
+  // in any timezone west of UTC (and east of UTC for late-evening dates).
+  // In IST (UTC+5:30), `new Date(2025, 3, 1)` is local Apr 1 00:00, which
+  // becomes Mar 31 18:30 UTC, and `toISOString()` reports "2025-03-31".
+  // We want the LOCAL calendar date here, so format components manually.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function startOfMonth(d: Date): Date {

@@ -17,12 +17,32 @@ interface Row {
 }
 
 export default function CashFlowChart({ data }: { data: Row[] }) {
-  const chartWidth = Math.max(600, data.length * 12);
-  const labelInterval = Math.max(0, Math.floor(data.length / 15) - 1);
+  // Two layout modes:
+  //   - Short windows (<= 60 days): stay inside the card, no scrolling.
+  //   - Long windows (>= 90 days): widen the chart and let the parent scroll
+  //     so each spike still has room to breathe.
+  const isLongRange = data.length > 60;
+  const chartWidth = isLongRange ? Math.max(900, data.length * 8) : 0;
+
+  // For long ranges we collapse the per-day label to just the month boundary
+  // ("Jan 1", "Feb 1", …) and rely on the tooltip for daily detail.
+  const tickFormatter = (value: string) => {
+    if (!isLongRange) return value;
+    // Backend formats dates as "Apr 5" — keep month-1 day-1 marks, else blank.
+    const parts = value.split(" ");
+    if (parts.length === 2 && parts[1] === "1") return parts[0];
+    return "";
+  };
 
   return (
-    <div className="w-full overflow-x-auto rounded-lg">
-      <div style={{ width: chartWidth, height: 280, minWidth: "100%" }}>
+    <div className={isLongRange ? "w-full overflow-x-auto rounded-lg" : "w-full rounded-lg"}>
+      <div
+        style={
+          isLongRange
+            ? { width: chartWidth, height: 280, minWidth: "100%" }
+            : { width: "100%", height: 280 }
+        }
+      >
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data} margin={{ top: 10, right: 10, bottom: 4, left: -10 }}>
             <defs>
@@ -41,10 +61,14 @@ export default function CashFlowChart({ data }: { data: Row[] }) {
               tick={{ fontSize: 10, fill: "#64748b" }}
               tickLine={false}
               axisLine={{ stroke: "#e2e8f0" }}
-              interval={labelInterval}
-              angle={-40}
-              textAnchor="end"
-              height={48}
+              // minTickGap is the robust knob: Recharts skips ticks that would
+              // overlap horizontally regardless of how many points there are.
+              minTickGap={isLongRange ? 60 : 30}
+              interval="preserveStartEnd"
+              tickFormatter={tickFormatter}
+              angle={isLongRange ? 0 : -40}
+              textAnchor={isLongRange ? "middle" : "end"}
+              height={isLongRange ? 30 : 48}
             />
             <YAxis
               tick={{ fontSize: 11, fill: "#64748b" }}
