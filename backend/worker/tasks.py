@@ -55,11 +55,13 @@ from services.anomalies import check_bank_transaction, check_receipt
 from services.extractors import llm_vision
 from services.parsers.bank_csv import parse_bank_csv
 from services.parsers.extracted_json import (
+    BankStatementDraft,
     ExtractedJSONError,
     InvoiceDraft,
     ReceiptDraft,
     parse_extracted_json,
 )
+from services.parsers.bank_csv import extract_vendor_hint
 from services.vendors import resolve_client, resolve_vendor
 
 logger = logging.getLogger(__name__)
@@ -292,6 +294,40 @@ def _run_extracted(db: Session, doc: Document) -> dict:
         db.flush()
         if check_receipt(db, doc.org_id, receipt) is not None:
             anomalies_emitted += 1
+
+    elif isinstance(draft, BankStatementDraft):
+        # LLM-extracted bank statement from a PDF (e.g. ICICI OpTransactionHistory).
+        # Same understanding path as CSV bank statements: resolve each txn's
+        # vendor, persist BankTransaction rows, then run anomaly checks.
+        doc.document_type = "bank_statement"
+        inserted: list[BankTransaction] = []
+        for txn_draft in draft.transactions:
+            vendor = None
+            hint = extract_vendor_hint(txn_draft.description)
+            if hint:
+                if txn_draft.direction == "debit":
+                    vendor = resolve_vendor(db, doc.org_id, hint)
+                else:
+                    resolve_client(db, doc.org_id, hint)
+
+            txn = BankTransaction(
+                org_id=doc.org_id,
+                document_id=doc.id,
+                txn_date=txn_draft.date,
+                description=txn_draft.description,
+                amount=txn_draft.amount,
+                direction=txn_draft.direction,
+                running_balance=txn_draft.balance,
+                matched_vendor_id=vendor.id if vendor else None,
+            )
+            db.add(txn)
+            inserted.append(txn)
+        db.flush()
+        entities_created = len(inserted)
+
+        for txn in inserted:
+            if check_bank_transaction(db, doc.org_id, txn) is not None:
+                anomalies_emitted += 1
 
     doc.status = "understood"
     db.commit()

@@ -41,7 +41,7 @@ the vendor/client and persists.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -91,6 +91,48 @@ class InvoiceDraft:
                 else None
             ),
             "line_items": self.line_items,
+        }
+
+
+@dataclass(slots=True)
+class BankTxnFromLLM:
+    """One transaction as the LLM returned it inside a bank_statement payload."""
+
+    date: date
+    description: str
+    amount: Decimal
+    direction: str  # "credit" | "debit"
+    balance: Optional[Decimal] = None
+
+
+@dataclass(slots=True)
+class BankStatementDraft:
+    """A whole bank statement extracted by the LLM."""
+
+    account_holder: Optional[str]
+    account_number_last4: Optional[str]
+    currency: str
+    period_start: Optional[date]
+    period_end: Optional[date]
+    transactions: list[BankTxnFromLLM] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "account_holder": self.account_holder,
+            "account_number_last4": self.account_number_last4,
+            "currency": self.currency,
+            "period_start": self.period_start.isoformat() if self.period_start else None,
+            "period_end": self.period_end.isoformat() if self.period_end else None,
+            "transactions": [
+                {
+                    "date": t.date.isoformat(),
+                    "description": t.description,
+                    "amount": str(t.amount),
+                    "direction": t.direction,
+                    "balance": str(t.balance) if t.balance is not None else None,
+                }
+                for t in self.transactions
+            ],
         }
 
 
@@ -211,7 +253,7 @@ def parse_extracted_json(
     payload: dict,
     *,
     fallback_document_type: Optional[str] = None,
-) -> InvoiceDraft | ReceiptDraft:
+) -> InvoiceDraft | ReceiptDraft | BankStatementDraft:
     """Dispatch on document_type. Raises ExtractedJSONError if it can't be classified."""
     if not isinstance(payload, dict):
         raise ExtractedJSONError(
@@ -228,8 +270,12 @@ def parse_extracted_json(
         return _parse_invoice(payload, declared_type=doc_type)
     if doc_type == "receipt":
         return _parse_receipt(payload)
+    if doc_type == "bank_statement":
+        return _parse_bank_statement(payload)
 
-    # Heuristic fallback: presence of invoice_number ⇒ invoice; else receipt.
+    # Heuristic fallback: presence of transactions[] ⇒ bank statement; etc.
+    if isinstance(payload.get("transactions"), list) and payload["transactions"]:
+        return _parse_bank_statement(payload)
     if payload.get("invoice_number"):
         return _parse_invoice(payload, declared_type="invoice")
     if payload.get("amount") or payload.get("total"):
@@ -290,6 +336,67 @@ def _parse_invoice(payload: dict, *, declared_type: str) -> InvoiceDraft:
         currency=str(payload.get("currency") or "INR")[:3].upper(),
         counterparty=counterparty,
         line_items=line_items,
+    )
+
+
+def _parse_bank_statement(payload: dict) -> BankStatementDraft:
+    """Parse Claude's bank_statement payload into a BankStatementDraft."""
+    raw_txns = payload.get("transactions") or []
+    if not isinstance(raw_txns, list):
+        raise ExtractedJSONError("bank_statement.transactions must be a list")
+
+    txns: list[BankTxnFromLLM] = []
+    for i, raw in enumerate(raw_txns):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            txn_date = _coerce_date(raw.get("date"), field_name=f"transactions[{i}].date")
+            amount = _coerce_decimal(
+                raw.get("amount"), field_name=f"transactions[{i}].amount"
+            )
+        except ExtractedJSONError:
+            # Skip malformed rows but keep going — LLM extracts can have stragglers.
+            logger.warning("skipped malformed transaction at index %d", i)
+            continue
+
+        direction = str(raw.get("direction", "")).strip().lower()
+        if direction not in ("credit", "debit"):
+            # Try to infer from amount sign.
+            direction = "debit" if amount < 0 else "credit"
+            amount = abs(amount)
+
+        balance = _coerce_optional_decimal(
+            raw.get("balance"), field_name=f"transactions[{i}].balance"
+        )
+
+        description = str(raw.get("description") or raw.get("narration") or "").strip()
+
+        txns.append(
+            BankTxnFromLLM(
+                date=txn_date,
+                description=description,
+                amount=amount,
+                direction=direction,
+                balance=balance,
+            )
+        )
+
+    period_start = _coerce_optional_date(
+        payload.get("period_start"), field_name="period_start"
+    )
+    period_end = _coerce_optional_date(payload.get("period_end"), field_name="period_end")
+
+    last4 = payload.get("account_number_last4")
+    if last4 is not None:
+        last4 = str(last4).strip()[-4:]
+
+    return BankStatementDraft(
+        account_holder=(payload.get("account_holder") or "").strip() or None,
+        account_number_last4=last4,
+        currency=str(payload.get("currency") or "INR")[:3].upper(),
+        period_start=period_start,
+        period_end=period_end,
+        transactions=txns,
     )
 
 
