@@ -17,6 +17,11 @@ import InsightCard from "../components/InsightCard";
 import CashFlowChart from "../components/charts/CashFlowChart";
 import ExpenseDonut from "../components/charts/ExpenseDonut";
 import ForecastChart from "../components/charts/ForecastChart";
+import RecurringOutflows from "../components/RecurringOutflows";
+import DateRangePicker, {
+  type DateRange,
+  presetToRange,
+} from "../components/DateRangePicker";
 import { api } from "../api";
 import { demo } from "../data/demoData";
 import type { DashboardSummaryOut } from "../types";
@@ -51,6 +56,7 @@ interface ViewModel {
   }[];
   forecast: { date: string; forecast: number; lowerBand: number; upperBand: number }[];
   compliance: { status: "ok" | "warn" | "fail"; label: string }[];
+  recurringOutflows: import("../types").RecurringOutflowOut[];
   hasAnyData: boolean;
   isLive: boolean;        // true when from real API
   bankTxnCount: number;
@@ -78,6 +84,26 @@ function adaptDemo(): ViewModel {
       { status: "ok", label: "98% of purchases have HSN codes" },
       { status: "warn", label: "7 receipts missing vendor" },
       { status: "ok", label: "Bank statements complete through May 18" },
+    ],
+    recurringOutflows: [
+      {
+        label: "Rent — Landlord ABC",
+        median_amount: 50000,
+        expected_day_of_month: 5,
+        observed_count: 6,
+        last_seen_on: "2026-05-05",
+        status: "on_track",
+        days_until_due: 12,
+      },
+      {
+        label: "AWS",
+        median_amount: 14200,
+        expected_day_of_month: 2,
+        observed_count: 5,
+        last_seen_on: "2026-04-02",
+        status: "overdue",
+        days_until_due: -19,
+      },
     ],
     hasAnyData: true,
     isLive: false,
@@ -134,6 +160,7 @@ function adaptSummary(s: DashboardSummaryOut): ViewModel {
       upperBand: Number(p.upper_band),
     })),
     compliance: s.compliance.map((c) => ({ status: c.status, label: c.label })),
+    recurringOutflows: s.recurring_outflows ?? [],
     hasAnyData: s.has_any_data,
     isLive: true,
     bankTxnCount: s.bank_txn_count,
@@ -150,14 +177,38 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch real data whenever demo is off; refetch when toggled on→off.
+  // Date-range filter (default: this month). Restored from localStorage so
+  // the founder doesn't have to re-pick on every page load.
+  const [dateRange, setDateRange] = useState<DateRange>(() => {
+    try {
+      const stored = window.localStorage.getItem("nira:dateRange");
+      if (stored) {
+        const p = JSON.parse(stored) as DateRange;
+        if (p && p.from && p.to && p.preset) return p;
+      }
+    } catch {
+      // ignore — fall through to default
+    }
+    return presetToRange("this_month");
+  });
+
+  // Persist selection.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("nira:dateRange", JSON.stringify(dateRange));
+    } catch {
+      // localStorage can be disabled in some prod browsers; non-fatal.
+    }
+  }, [dateRange]);
+
+  // Fetch real data whenever demo is off OR the range changes.
   useEffect(() => {
     if (demoMode) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
     api
-      .dashboardSummary()
+      .dashboardSummary({ from: dateRange.from, to: dateRange.to })
       .then((s) => {
         if (!cancelled) setSummary(s);
       })
@@ -170,7 +221,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [demoMode]);
+  }, [demoMode, dateRange]);
 
   const vm: ViewModel = useMemo(() => {
     if (demoMode) return adaptDemo();
@@ -194,6 +245,7 @@ export default function Dashboard() {
       insights: [],
       forecast: [],
       compliance: [],
+      recurringOutflows: [],
       hasAnyData: false,
       isLive: true,
       bankTxnCount: 0,
@@ -211,9 +263,11 @@ export default function Dashboard() {
     <>
       <TopBar
         title="Dashboard"
-        subtitle="Real-time financial picture · Demo Org"
+        subtitle="Real-time financial picture"
         actions={
-          <button
+          <div className="flex items-center gap-2">
+            <DateRangePicker value={dateRange} onChange={setDateRange} />
+            <button
             onClick={() => setDemoMode(!demoMode)}
             className={cn(
               "btn ring-1 transition-colors",
@@ -224,7 +278,8 @@ export default function Dashboard() {
           >
             <Sparkles className="h-3.5 w-3.5" />
             {demoMode ? "Demo data on" : "Demo data off"}
-          </button>
+            </button>
+          </div>
         }
       />
 
@@ -409,6 +464,14 @@ export default function Dashboard() {
             )}
           </SectionCard>
         </div>
+
+        {/* Recurring outflows (Tier-1 learning) */}
+        <SectionCard
+          title="Regular outflows"
+          subtitle="Recurring monthly payments learned from your statements"
+        >
+          <RecurringOutflows rows={vm.recurringOutflows} />
+        </SectionCard>
 
         {/* Top clients + Compliance */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">

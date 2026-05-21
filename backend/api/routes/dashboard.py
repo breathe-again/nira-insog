@@ -109,9 +109,24 @@ def _today_utc() -> date:
 
 @router.get("/summary", response_model=DashboardSummaryOut, summary="Dashboard rollup")
 def dashboard_summary(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
     db: Session = Depends(get_db),
     org_id: uuid.UUID = Depends(current_org_id),
 ) -> DashboardSummaryOut:
+    """Build the dashboard summary.
+
+    Date filter (Phase C):
+      - `from_date` and `to_date` (ISO YYYY-MM-DD) restrict the window used
+        by cash flow, expense breakdown, top vendors/clients, MTD net flow,
+        and recurring detection.
+      - When omitted, defaults to "last 30 days" anchored on the latest
+        bank-txn date — preserves the pre-filter behavior.
+
+    Receivables aging, total receivables, total payables, compliance, and
+    insights are NOT date-filtered: they're a snapshot of the org's current
+    obligations.
+    """
     real_today = _today_utc()
 
     bank_txn_count = int(
@@ -137,9 +152,36 @@ def dashboard_summary(
     else:
         today = real_today
 
-    month_start = today.replace(day=1)
-    thirty_days_ago = today - timedelta(days=30)
-    sixty_days_ago = today - timedelta(days=60)
+    # ---- Date filter ---------------------------------------------------
+    # If the caller specified from_date + to_date, every "windowed" metric
+    # (cash flow chart, MTD net flow, expense breakdown, top vendors/clients)
+    # uses that range. Otherwise default to the last 30 days from `today`.
+    if from_date is not None and to_date is not None:
+        if from_date > to_date:
+            # Tolerate reversed input.
+            from_date, to_date = to_date, from_date
+        window_start = from_date
+        window_end = to_date
+        # "This month" semantics for MTD KPI shift to "this range" totals.
+        month_start = from_date
+        # Comparison period = same length immediately before the window.
+        span_days = max(1, (window_end - window_start).days + 1)
+        prev_window_end = window_start - timedelta(days=1)
+        prev_window_start = prev_window_end - timedelta(days=span_days - 1)
+        # Drive the chart x-axis from the explicit range.
+        thirty_days_ago = window_start
+        sixty_days_ago = prev_window_start
+        # Force the latest-data anchor to the window end so dashboards
+        # tooltipped on the right dates.
+        today = window_end
+    else:
+        month_start = today.replace(day=1)
+        thirty_days_ago = today - timedelta(days=30)
+        sixty_days_ago = today - timedelta(days=60)
+        window_start = thirty_days_ago
+        window_end = today
+        prev_window_start = sixty_days_ago
+        prev_window_end = thirty_days_ago
 
     # ------------ KPI: Cash position ------------
     latest_balance_row = db.execute(
@@ -494,43 +536,29 @@ def dashboard_summary(
     )
     insights = [InsightOut.model_validate(r) for r in insight_rows]
 
-    # ------------ Naive cash forecast (next 30 days) ------------
-    # mean daily net flow over the last 14 days
-    last14_start = today - timedelta(days=14)
-    last14_credits = Decimal(
-        db.scalar(
-            select(func.coalesce(func.sum(BankTransaction.amount), 0)).where(
-                BankTransaction.org_id == org_id,
-                BankTransaction.direction == "credit",
-                BankTransaction.txn_date >= last14_start,
-            )
-        )
-        or 0
-    )
-    last14_debits = Decimal(
-        db.scalar(
-            select(func.coalesce(func.sum(BankTransaction.amount), 0)).where(
-                BankTransaction.org_id == org_id,
-                BankTransaction.direction == "debit",
-                BankTransaction.txn_date >= last14_start,
-            )
-        )
-        or 0
-    )
-    daily_net = (last14_credits - last14_debits) / Decimal("14")
+    # ------------ Seasonal cash forecast (next 30 days) ------------
+    # Tier-1 learning: replaces the naive linear from-last-14-days with a
+    # day-of-month seasonal model that uses 6 months of history. Falls back
+    # to running-average daily net when there isn't enough history for a
+    # given day-of-month (e.g. day 31 in a Feb-only history).
+    from services.forecasting import seasonal_forecast
 
+    seasonal_points = seasonal_forecast(db, org_id=org_id, starting_from=today)
     forecast: list[ForecastPointOut] = []
-    base = cash_now
-    for i in range(30):
-        d = today + timedelta(days=i)
-        projected = base + daily_net * Decimal(i)
-        band = projected * Decimal("0.15") + Decimal(i) * Decimal("2000")
+    running_cash = cash_now
+    for p in seasonal_points:
+        running_cash = running_cash + p.forecast
+        # Bands widen the further out we project — compounding uncertainty.
+        days_out = (p.date - today).days
+        widening = Decimal(days_out) * Decimal("1500")
+        lower = running_cash + p.lower_band - p.forecast - widening
+        upper = running_cash + p.upper_band - p.forecast + widening
         forecast.append(
             ForecastPointOut(
-                date=d.strftime("%b %-d"),
-                forecast=projected,
-                lower_band=projected - band,
-                upper_band=projected + band,
+                date=p.date.strftime("%b %-d"),
+                forecast=running_cash,
+                lower_band=lower,
+                upper_band=upper,
             )
         )
 
@@ -610,6 +638,52 @@ def dashboard_summary(
             ComplianceRowOut(status="warn", label="No documents yet — upload to get checks.")
         )
 
+    # ------------ Recurring outflows (Tier-1 learning) ------------
+    from common.models import RecurringPattern
+    from api.schemas import RecurringOutflowOut
+
+    rec_rows = list(
+        db.scalars(
+            select(RecurringPattern)
+            .where(RecurringPattern.org_id == org_id)
+            .order_by(desc(RecurringPattern.median_amount))
+            .limit(10)
+        )
+    )
+    recurring_outflows: list[RecurringOutflowOut] = []
+    for r in rec_rows:
+        status = "on_track"
+        days_until_due: int | None = None
+        if r.cadence == "monthly" and r.expected_day_of_month is not None:
+            # Same logic as services/recurring._expected_next_date.
+            target_day = max(1, min(28, r.expected_day_of_month))
+            year, month = r.last_seen_on.year, r.last_seen_on.month + 1
+            if month > 12:
+                year, month = year + 1, 1
+            try:
+                next_due = date(year, month, target_day)
+            except ValueError:
+                next_due = date(year, month, 28)
+            delta = (next_due - today).days
+            days_until_due = delta
+            if delta < -5:
+                status = "overdue"
+            elif delta < 0:
+                status = "due_soon"
+            elif delta <= 3:
+                status = "due_soon"
+        recurring_outflows.append(
+            RecurringOutflowOut(
+                label=r.label,
+                median_amount=r.median_amount,
+                expected_day_of_month=r.expected_day_of_month,
+                observed_count=r.observed_count,
+                last_seen_on=r.last_seen_on.isoformat(),
+                status=status,
+                days_until_due=days_until_due,
+            )
+        )
+
     return DashboardSummaryOut(
         cash_position=kpis["cash_position"],
         receivables=kpis["receivables"],
@@ -623,6 +697,7 @@ def dashboard_summary(
         top_clients=top_clients,
         insights=insights,
         compliance=compliance,
+        recurring_outflows=recurring_outflows,
         has_any_data=bank_txn_count > 0,
         bank_txn_count=bank_txn_count,
     )

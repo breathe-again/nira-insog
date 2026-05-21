@@ -248,6 +248,18 @@ class ComplianceRowOut(BaseModel):
     label: str
 
 
+class RecurringOutflowOut(BaseModel):
+    """One detected recurring spend pattern (rent, salary, AWS, etc.)."""
+
+    label: str
+    median_amount: Decimal
+    expected_day_of_month: int | None = None
+    observed_count: int
+    last_seen_on: str  # ISO date — frontend formats
+    status: str = "on_track"  # "on_track" | "due_soon" | "overdue"
+    days_until_due: int | None = None
+
+
 class DashboardSummaryOut(BaseModel):
     """Everything the Dashboard needs in one call.
 
@@ -272,6 +284,9 @@ class DashboardSummaryOut(BaseModel):
     top_clients: list[CounterpartyRowOut]
     insights: list[InsightOut]
     compliance: list[ComplianceRowOut]
+
+    # Tier-1 learning: detected recurring monthly spend.
+    recurring_outflows: list[RecurringOutflowOut] = Field(default_factory=list)
 
     # Honesty signal — tells the frontend whether enough data exists.
     has_any_data: bool = False

@@ -63,6 +63,11 @@ from services.parsers.extracted_json import (
     parse_extracted_json,
 )
 from services.parsers.bank_csv import extract_vendor_hint
+from services.recurring import (
+    emit_missed_payment_insights,
+    tag_recurring_transactions,
+    upsert_patterns,
+)
 from services.vendors import resolve_client, resolve_vendor
 
 logger = logging.getLogger(__name__)
@@ -180,6 +185,15 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
                 # Credits → client. We still set matched_client_id, not vendor.
                 resolve_client(db, doc.org_id, draft.raw_vendor_hint)
 
+        # Tier-1 learning: inherit the vendor's default expense category.
+        # This means founders who once said "Cafe Coffee Day is 'meals'" don't
+        # have to re-tag every future Swiggy charge that maps to that vendor.
+        inherited_category = (
+            vendor.default_expense_category
+            if vendor is not None and vendor.default_expense_category
+            else None
+        )
+
         txn = BankTransaction(
             org_id=doc.org_id,
             document_id=doc.id,
@@ -189,19 +203,34 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
             direction=draft.direction,
             running_balance=draft.running_balance,
             matched_vendor_id=vendor.id if vendor else None,
+            category=inherited_category,
+            auto_tagged_by=("vendor_default" if inherited_category else None),
         )
         db.add(txn)
         inserted.append(txn)
 
     db.flush()
 
-    # Stage 3b: anomaly detection runs after all rows are visible, so a
+    # Stage 3b: re-learn recurring patterns over the org's full history and
+    # tag the freshly-inserted rows that match.
+    upsert_patterns(db, org_id=doc.org_id)
+    tag_recurring_transactions(db, org_id=doc.org_id, txns=inserted)
+
+    # Stage 3c: anomaly detection runs after all rows are visible, so a
     # spike near the end of a statement can use the earlier rows as history.
+    # We skip txns flagged as recurring — those are by definition normal.
     anomalies_emitted = 0
     for txn in inserted:
+        if txn.is_recurring:
+            continue
         result = check_bank_transaction(db, doc.org_id, txn)
         if result is not None:
             anomalies_emitted += 1
+
+    # Stage 3d: emit missed-payment insights for any recurring pattern that's
+    # overdue. This catches "rent payment is 4 days late" without needing the
+    # user to set up a reminder.
+    missed_emitted = emit_missed_payment_insights(db, org_id=doc.org_id)
 
     doc.status = "understood"
     db.commit()
@@ -211,6 +240,7 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
         "rows_parsed": report.rows_parsed,
         "rows_skipped": report.rows_skipped,
         "anomalies": anomalies_emitted,
+        "missed_recurring": missed_emitted,
     }
 
 
@@ -317,6 +347,12 @@ def _run_extracted(db: Session, doc: Document) -> dict:
                 else:
                     resolve_client(db, doc.org_id, hint)
 
+            inherited_category = (
+                vendor.default_expense_category
+                if vendor is not None and vendor.default_expense_category
+                else None
+            )
+
             txn = BankTransaction(
                 org_id=doc.org_id,
                 document_id=doc.id,
@@ -326,15 +362,27 @@ def _run_extracted(db: Session, doc: Document) -> dict:
                 direction=txn_draft.direction,
                 running_balance=txn_draft.balance,
                 matched_vendor_id=vendor.id if vendor else None,
+                category=inherited_category,
+                auto_tagged_by=("vendor_default" if inherited_category else None),
             )
             db.add(txn)
             inserted.append(txn)
         db.flush()
         entities_created = len(inserted)
 
+        # Recurring detection + tag fresh rows
+        upsert_patterns(db, org_id=doc.org_id)
+        tag_recurring_transactions(db, org_id=doc.org_id, txns=inserted)
+
+        # Anomalies on non-recurring rows only
         for txn in inserted:
+            if txn.is_recurring:
+                continue
             if check_bank_transaction(db, doc.org_id, txn) is not None:
                 anomalies_emitted += 1
+
+        # Missed-payment insights
+        emit_missed_payment_insights(db, org_id=doc.org_id)
 
     doc.status = "understood"
     db.commit()

@@ -338,9 +338,51 @@ class BankTransaction(Base):
         nullable=True,
     )
     category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Tier 1 learning: did this txn match a known recurring pattern?
+    is_recurring: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # 'vendor_default' | 'recurring' | 'manual' | None
+    auto_tagged_by: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (Index("ix_bank_txns_org_date", "org_id", "txn_date"),)
+
+
+# ---------------------------------------------------------------------------
+# RecurringPattern — learned monthly/weekly recurring spend
+# ---------------------------------------------------------------------------
+
+
+class RecurringPattern(Base):
+    __tablename__ = "recurring_patterns"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    vendor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vendors.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    cadence: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="monthly"
+    )
+    expected_day_of_month: Mapped[Optional[int]] = mapped_column(nullable=True)
+    median_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    amount_tolerance_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0.10")
+    )
+    observed_count: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
+    first_seen_on: Mapped[date] = mapped_column(Date, nullable=False)
+    last_seen_on: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -130,6 +130,16 @@ export interface InsightListOut {
   total: number;
 }
 
+export interface RecurringOutflowOut {
+  label: string;
+  median_amount: string | number;
+  expected_day_of_month: number | null;
+  observed_count: number;
+  last_seen_on: string;
+  status: "on_track" | "due_soon" | "overdue";
+  days_until_due: number | null;
+}
+
 export interface DashboardSummaryOut {
   cash_position: KpiOut;
   receivables: KpiOut;
@@ -143,6 +153,7 @@ export interface DashboardSummaryOut {
   top_clients: CounterpartyRowOut[];
   insights: InsightOut[];
   compliance: ComplianceRowOut[];
+  recurring_outflows?: RecurringOutflowOut[];
   has_any_data: boolean;
   bank_txn_count: number;
 }

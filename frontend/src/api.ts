@@ -152,7 +152,15 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  dashboardSummary: () => request<DashboardSummaryOut>("/api/dashboard/summary"),
+  dashboardSummary: (params: { from?: string; to?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.from) q.set("from_date", params.from);
+    if (params.to) q.set("to_date", params.to);
+    const qs = q.toString();
+    return request<DashboardSummaryOut>(
+      `/api/dashboard/summary${qs ? `?${qs}` : ""}`,
+    );
+  },
 
   // ---------- Vendors ----------
   patchVendor: (

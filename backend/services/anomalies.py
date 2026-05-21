@@ -276,7 +276,13 @@ def _maybe_emit(
         if mute.expires_at is None or mute.expires_at > datetime.now(timezone.utc):
             return None
 
-    verdict = evaluate_amount(amount, history)
+    # Tier-1 learning: tenant-adaptive z threshold.
+    # Businesses with naturally lumpy cash flow get a higher bar before we
+    # cry wolf. We measure that via the coefficient of variation across the
+    # whole org's debit history.
+    z_thresh = _adaptive_z_threshold(db, org_id=org_id)
+
+    verdict = evaluate_amount(amount, history, z_threshold=z_thresh)
     if not verdict.flagged or verdict.severity is None:
         return None
     mu = verdict.mean
@@ -379,6 +385,51 @@ _MONTHS = (
 def _format_date_human(d: date) -> str:
     """Format a date as 'Apr 22, 2025' — short, unambiguous, no ISO ugliness."""
     return f"{_MONTHS[d.month - 1]} {d.day}, {d.year}"
+
+
+def _adaptive_z_threshold(db: Session, *, org_id: uuid.UUID) -> float:
+    """Compute a tenant-adaptive z-threshold.
+
+    The rationale: businesses with naturally lumpy cash flow (e.g. consulting
+    firms that get a single big invoice per quarter) have high coefficient of
+    variation across their debits. Using a fixed z>2 floods them with false
+    positives. We bump the threshold for lumpy tenants and lower it slightly
+    for tenants with very regular cadence.
+
+    Returns a float between 1.8 and 4.0.
+    """
+    # 12-month sample of all debits.
+    cutoff = date.today() - timedelta(days=365)
+    amounts = list(db.scalars(
+        select(BankTransaction.amount).where(
+            BankTransaction.org_id == org_id,
+            BankTransaction.direction == "debit",
+            BankTransaction.txn_date >= cutoff,
+        )
+    ).all())
+
+    if len(amounts) < 30:
+        return Z_THRESHOLD  # not enough data — use the global default
+
+    floats = [float(a) for a in amounts]
+    mu = mean(floats)
+    sigma = stdev(floats) if len(floats) >= 2 else 0.0
+    if mu <= 0:
+        return Z_THRESHOLD
+    cv = sigma / mu  # coefficient of variation
+
+    # Map CV [0, ∞) → threshold [1.8, 4.0]:
+    #   cv ≤ 0.5 (regular cadence)  → 1.8 (tighter — catch small anomalies)
+    #   cv ≈ 1.0 (typical SMB)      → 2.0 (the default)
+    #   cv ≈ 2.0 (lumpy business)   → 3.0
+    #   cv ≥ 3.0 (very lumpy)       → 4.0 (almost nothing fires)
+    if cv <= 0.5:
+        return 1.8
+    if cv <= 1.0:
+        return 2.0
+    if cv <= 2.0:
+        return 2.0 + (cv - 1.0)  # linearly 2.0 → 3.0
+    return min(4.0, 3.0 + (cv - 2.0) * 0.5)
 
 
 def _humanize_anomaly_body(
