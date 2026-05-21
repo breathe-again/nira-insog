@@ -91,25 +91,23 @@ export default function CashFlowChart({
             : { width: "100%", height: 300 }
         }
       >
-        <ResponsiveContainer width="100%" height="100%">
-          {mode === "category" ? (
-            <CategoryChart
-              data={categoryData ?? []}
-              palette={categoryPalette ?? []}
-              isLongRange={isLongRange}
-              tickFormatter={tickFormatter}
-              recurringDays={recurringDays}
-            />
-          ) : (
-            <NetChart
-              data={data}
-              isLongRange={isLongRange}
-              tickFormatter={tickFormatter}
-              anomalyDates={mode === "anomaly" ? anomalyDates : []}
-              recurringDays={mode === "anomaly" ? recurringDays : []}
-            />
-          )}
-        </ResponsiveContainer>
+        {mode === "category" ? (
+          <CategoryChart
+            data={categoryData ?? []}
+            palette={categoryPalette ?? []}
+            isLongRange={isLongRange}
+            tickFormatter={tickFormatter}
+            recurringDays={recurringDays}
+          />
+        ) : (
+          <NetChart
+            data={data}
+            isLongRange={isLongRange}
+            tickFormatter={tickFormatter}
+            anomalyDates={mode === "anomaly" ? anomalyDates : []}
+            recurringDays={mode === "anomaly" ? recurringDays : []}
+          />
+        )}
       </div>
     </div>
   );
@@ -149,6 +147,7 @@ function NetChart({
   }
 
   return (
+    <ResponsiveContainer width="100%" height="100%">
     <AreaChart data={data} margin={{ top: 10, right: 10, bottom: 4, left: -10 }}>
       <defs>
         <linearGradient id="inGrad" x1="0" y1="0" x2="0" y2="1">
@@ -248,6 +247,7 @@ function NetChart({
         }}
       />
     </AreaChart>
+    </ResponsiveContainer>
   );
 }
 
@@ -290,6 +290,7 @@ function CategoryChart({
   }
 
   return (
+    <ResponsiveContainer width="100%" height="100%">
     <AreaChart data={flat} margin={{ top: 10, right: 10, bottom: 4, left: -10 }}>
       <defs>
         {palette.map(([name, color]) => (
@@ -354,5 +355,6 @@ function CategoryChart({
         />
       ))}
     </AreaChart>
+    </ResponsiveContainer>
   );
 }
