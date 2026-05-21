@@ -29,4 +29,12 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Isolate from other apps that may be sharing the same Upstash Redis
+    # instance. Without this, ANY publisher hitting the default `celery`
+    # queue can land tasks our worker doesn't know how to handle, and our
+    # tasks could be eaten by other workers. Custom queue name = strict
+    # tenant separation across apps even when the broker is shared.
+    task_default_queue="nira_insig",
+    task_default_exchange="nira_insig",
+    task_default_routing_key="nira_insig",
 )
