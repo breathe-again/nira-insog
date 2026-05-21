@@ -25,7 +25,14 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Inject the live database URL.
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Escape `%` to `%%` because Alembic stores this in a ConfigParser, which
+# treats unescaped `%` as a value-interpolation token (`%(foo)s`). The URL
+# contains `%3D` when we URL-encode the inner `=` of `options=endpoint=...`
+# for Neon's SNI-bypass routing, so this escape is required.
+config.set_main_option(
+    "sqlalchemy.url",
+    get_settings().database_url.replace("%", "%%"),
+)
 
 target_metadata = Base.metadata
 
