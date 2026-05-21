@@ -22,20 +22,32 @@ export default function UploadDropzone({ onUploaded }: Props) {
       setError(null);
       const total = files.length;
       setProgress({ done: 0, total });
-      try {
-        let done = 0;
-        for (const file of Array.from(files)) {
+      // Track failures per-file but DON'T abort the batch on a single bad
+      // upload. One unsupported file shouldn't stop the rest from making it
+      // into the queue.
+      const failures: string[] = [];
+      let done = 0;
+      for (const file of Array.from(files)) {
+        try {
           const doc = await api.uploadDocument(file);
           onUploaded?.(doc);
-          done++;
-          setProgress({ done, total });
+        } catch (e) {
+          failures.push(
+            `${file.name}: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusy(false);
-        setTimeout(() => setProgress(null), 1500);
+        done++;
+        setProgress({ done, total });
       }
+      setBusy(false);
+      if (failures.length > 0) {
+        setError(
+          failures.length === 1
+            ? failures[0]
+            : `${failures.length} of ${total} failed:\n` + failures.join("\n"),
+        );
+      }
+      setTimeout(() => setProgress(null), 2500);
     },
     [onUploaded],
   );
@@ -84,10 +96,11 @@ export default function UploadDropzone({ onUploaded }: Props) {
       </div>
 
       <div className="text-sm text-ink-700">
-        <span className="font-medium text-brand-700">Click to upload</span> or drag and drop
+        <span className="font-medium text-brand-700">Click to upload</span> or drag &amp; drop —
+        single file or many at once
       </div>
       <div className="text-xs text-ink-500 mt-1">
-        PDF · image · CSV · Excel · up to 25 MB
+        PDF · image · CSV · Excel · up to 25 MB each
       </div>
 
       {progress && (
@@ -97,7 +110,9 @@ export default function UploadDropzone({ onUploaded }: Props) {
       )}
 
       {error && (
-        <div className="mt-4 text-xs text-rose-600 max-w-md text-center">{error}</div>
+        <div className="mt-4 text-xs text-rose-600 max-w-md text-center whitespace-pre-line">
+          {error}
+        </div>
       )}
     </label>
   );
