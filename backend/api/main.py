@@ -48,6 +48,7 @@ from .routes.dashboard import router as dashboard_router
 from .routes.documents import router as documents_router
 from .routes.feedback import router as feedback_router
 from .routes.insights import router as insights_router
+from .routes.learning import router as learning_router
 from .routes.vendors import router as vendors_router
 from common.db import SessionLocal
 from common.storage import ensure_upload_root
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(insights_router)
     app.include_router(dashboard_router)
     app.include_router(feedback_router)
+    app.include_router(learning_router)
 
     @app.get("/")
     def root() -> dict[str, Any]:

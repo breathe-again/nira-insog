@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Activity,
+  Brain,
   Inbox,
   LayoutDashboard,
   LogOut,
@@ -25,6 +26,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { to: "/", label: "Dashboard", Icon: LayoutDashboard },
       { to: "/inbox", label: "Inbox", Icon: Inbox },
       { to: "/insights", label: "Insights", Icon: Sparkles },
+      { to: "/learning", label: "Learning", Icon: Brain },
     ],
   },
   {

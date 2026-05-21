@@ -432,6 +432,64 @@ def _adaptive_z_threshold(db: Session, *, org_id: uuid.UUID) -> float:
     return min(4.0, 3.0 + (cv - 2.0) * 0.5)
 
 
+def rehumanize_existing_insights(db: Session, *, org_id: uuid.UUID) -> int:
+    """Walk every existing vendor_amount_anomaly insight for the org and
+    rebuild its `body` text using the new humanizer. Idempotent — re-running
+    is safe. Returns the count of rows rewritten.
+
+    Used by the /api/learning/retrain endpoint so old jargon-y insights
+    ('n=5, σ=₹28,338, z=351.9') get rewritten to plain English in one click.
+    """
+    rows = list(db.scalars(
+        select(Insight).where(
+            Insight.org_id == org_id,
+            Insight.type == "vendor_amount_anomaly",
+        )
+    ).all())
+
+    rewritten = 0
+    for ins in rows:
+        sd = ins.supporting_data or {}
+        try:
+            amount = Decimal(str(sd.get("amount", "0")))
+            mu = float(sd.get("mean", "0"))
+            vendor_name = str(sd.get("vendor_name") or "this vendor")
+            iso = sd.get("observed_on")
+            if not iso:
+                continue
+            year, month, day = (int(p) for p in str(iso).split("-")[:3])
+            observed_on = date(year, month, day)
+        except (ValueError, TypeError, KeyError):
+            continue
+
+        multiple = (float(amount) / mu) if mu > 0 else 0.0
+        pct_above = ((float(amount) - mu) / mu * 100.0) if mu > 0 else 0.0
+        new_body = _humanize_anomaly_body(
+            amount=amount,
+            mu=mu,
+            multiple=multiple,
+            pct_above=pct_above,
+            vendor_name=vendor_name,
+            observed_on=observed_on,
+        )
+        if new_body != ins.body:
+            ins.body = new_body
+            # Ensure the 'technical' tooltip is stashed for the "Why this insight?"
+            # collapsible on the new /insights page.
+            sd_mut = dict(sd)
+            if "technical" not in sd_mut:
+                stddev = sd.get("stddev", "0")
+                n = sd.get("sample_size", "?")
+                z = sd.get("z_score", "?")
+                sd_mut["technical"] = (
+                    f"+{pct_above:.0f}% vs typical (n={n}, σ=₹{float(stddev):,.2f}, z={z})"
+                )
+                ins.supporting_data = sd_mut
+            rewritten += 1
+    db.flush()
+    return rewritten
+
+
 def _humanize_anomaly_body(
     *,
     amount: Decimal,

@@ -140,6 +140,51 @@ export interface RecurringOutflowOut {
   days_until_due: number | null;
 }
 
+// ---------- Learning ----------
+
+export interface PatternRowOut {
+  label: string;
+  median_amount: string | number;
+  expected_day_of_month: number | null;
+  cadence: string;
+  observed_count: number;
+  last_seen_on: string;
+  days_since_last_seen: number;
+  is_overdue: boolean;
+}
+
+export interface ForecastPreviewPoint {
+  date: string;
+  forecast: string | number;
+  day_of_month: number;
+  is_recurring_day: boolean;
+}
+
+export interface LearningStatusOut {
+  bank_txn_count: number;
+  vendor_count: number;
+  insight_count: number;
+  pattern_count: number;
+  tagged_txn_count: number;
+  auto_categorized_count: number;
+  anomaly_insight_count: number;
+  missed_payment_insight_count: number;
+  adaptive_z_threshold: number;
+  coefficient_of_variation: number;
+  threshold_explanation: string;
+  patterns: PatternRowOut[];
+  forecast_preview: ForecastPreviewPoint[];
+}
+
+export interface RetrainOut {
+  new_patterns: number;
+  newly_tagged_txns: number;
+  missed_payment_insights: number;
+  auto_categorized: number;
+  rehumanized_insights: number;
+  ran_at: string;
+}
+
 export interface DashboardSummaryOut {
   cash_position: KpiOut;
   receivables: KpiOut;

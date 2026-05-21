@@ -17,6 +17,8 @@ import type {
   DocumentListOut,
   DocumentOut,
   InsightListOut,
+  LearningStatusOut,
+  RetrainOut,
   TokensOut,
 } from "./types";
 
@@ -210,6 +212,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  // ---------- Learning ----------
+  learningStatus: () => request<LearningStatusOut>("/api/learning/status"),
+  retrain: () => request<RetrainOut>("/api/learning/retrain", { method: "POST" }),
 };
 
 export { API_BASE };
