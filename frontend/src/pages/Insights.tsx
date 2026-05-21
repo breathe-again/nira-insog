@@ -242,14 +242,14 @@ function InsightCard({ insight, busy, onDismiss, onMuteVendor }: InsightCardProp
     SEVERITY_META.info;
 
   const isDismissed = insight.dismissed_at !== null;
-  const technical =
+  const sd =
     insight.supporting_data && typeof insight.supporting_data === "object"
-      ? (insight.supporting_data as Record<string, unknown>).technical
+      ? (insight.supporting_data as Record<string, unknown>)
       : null;
-  const vendorId =
-    insight.supporting_data && typeof insight.supporting_data === "object"
-      ? (insight.supporting_data as Record<string, unknown>).vendor_id
-      : null;
+  const technicalText: string | null =
+    sd && typeof sd.technical === "string" ? sd.technical : null;
+  const vendorId: string | null =
+    sd && typeof sd.vendor_id === "string" ? sd.vendor_id : null;
 
   return (
     <div
@@ -286,12 +286,12 @@ function InsightCard({ insight, busy, onDismiss, onMuteVendor }: InsightCardProp
           )}
         </div>
         <p className="text-sm text-ink-700 mt-1.5 leading-relaxed">{insight.body}</p>
-        {typeof technical === "string" && (
+        {technicalText && (
           <details className="mt-2">
             <summary className="text-[11px] text-ink-500 cursor-pointer hover:text-ink-700 select-none">
               Why this insight?
             </summary>
-            <div className="text-[11px] text-ink-500 mt-1 font-mono">{technical}</div>
+            <div className="text-[11px] text-ink-500 mt-1 font-mono">{technicalText}</div>
           </details>
         )}
       </div>
