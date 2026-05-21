@@ -66,6 +66,7 @@ class Organization(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
     gstin: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     plan: Mapped[str] = mapped_column(String(20), nullable=False, default="trial")
     created_at: Mapped[datetime] = _ts_now()
@@ -78,6 +79,140 @@ class User(Base):
     org_id: Mapped[uuid.UUID] = _org_fk()
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="founder")
+    # Auth fields (Phase A). password_hash is argon2id; nullable so the legacy
+    # demo user (no password) keeps working when DEMO_MODE=1.
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failed_login_count: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
+    locked_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts_now()
+
+
+# ---------------------------------------------------------------------------
+# Session — server-side refresh token registry (revocable)
+# ---------------------------------------------------------------------------
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    # sha256 of the refresh token — never store plaintext.
+    refresh_token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    user_agent: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = _ts_now()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# AuditEvent — security-sensitive actions
+# ---------------------------------------------------------------------------
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    # Column name in the DB is "metadata" but that's a reserved attribute on
+    # SQLAlchemy Base subclasses — map it to .meta in Python.
+    meta: Mapped[Optional[dict]] = mapped_column(
+        "metadata", JSONB, nullable=True
+    )
+    created_at: Mapped[datetime] = _ts_now()
+
+
+# ---------------------------------------------------------------------------
+# FilenameHint — learned mapping from filename pattern → document_type
+# ---------------------------------------------------------------------------
+
+
+class FilenameHint(Base):
+    __tablename__ = "filename_hints"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    pattern: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    hit_count: Mapped[int] = mapped_column(
+        nullable=False, default=1, server_default="1"
+    )
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# VendorMute — per-vendor anomaly silencing
+# ---------------------------------------------------------------------------
+
+
+class VendorMute(Base):
+    __tablename__ = "vendor_mutes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vendors.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rule: Mapped[str] = mapped_column(String(60), nullable=False, default="anomaly")
+    muted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = _ts_now()
 
 
@@ -151,6 +286,9 @@ class Document(Base):
     document_type: Mapped[str] = mapped_column(String(40), nullable=False, default="unknown")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="received", index=True)
     raw_extraction_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Encryption-at-rest metadata: {scheme: "fernet-v1", key_id: "v1", ...}
+    # NULL means the file is stored in plaintext (legacy uploads pre-Phase A).
+    encryption_meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = _ts_now()
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -54,13 +54,19 @@ class ExtractorError(RuntimeError):
 def extract(
     file_path: Path,
     *,
-    file_type: str,                 # "pdf" | "image"
+    file_type: str,                 # "pdf" | "image" | "html" | "xlsx"
     document_type_hint: str = "unknown",
 ) -> dict:
     """Send a single document to Claude and return the extracted JSON.
 
     The JSON shape matches what `services/parsers/extracted_json.py`
     expects — see that module's docstring for the contract.
+
+    Supported file_type values:
+      - "pdf"   → sent as a base64 PDF document block (Claude vision).
+      - "image" → sent as a base64 image block (Claude vision).
+      - "html"  → decoded to text and stripped of tags; sent as a text block.
+      - "xlsx"  → workbook flattened to a CSV-like text dump; sent as a text block.
 
     Raises ExtractorError if the API key isn't set, the API call fails, or
     the model returns something we can't parse as JSON.
@@ -71,7 +77,7 @@ def extract(
     if not file_path.exists():
         raise ExtractorError(f"file not on disk: {file_path}")
 
-    if file_type not in ("pdf", "image"):
+    if file_type not in ("pdf", "image", "html", "xlsx"):
         raise ExtractorError(f"unsupported file_type={file_type!r}")
 
     try:
@@ -132,6 +138,33 @@ def extract(
 
 def _build_content_blocks(file_path: Path, file_type: str) -> list[dict]:
     """Build the list of content blocks for the API message."""
+    if file_type == "html":
+        text = _html_to_text(file_path)
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "Document source: HTML (e.g. a bank's web export). "
+                    "The visible text content follows between <<<HTML>>> markers; "
+                    "navigation chrome and scripts have been stripped.\n\n"
+                    "<<<HTML>>>\n" + text + "\n<<<END>>>"
+                ),
+            }
+        ]
+
+    if file_type == "xlsx":
+        text = _xlsx_to_text(file_path)
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "Document source: Excel workbook (.xlsx/.xls). "
+                    "Each sheet is dumped below as tab-separated rows.\n\n"
+                    "<<<WORKBOOK>>>\n" + text + "\n<<<END>>>"
+                ),
+            }
+        ]
+
     data = file_path.read_bytes()
     b64 = base64.standard_b64encode(data).decode("ascii")
 
@@ -166,6 +199,143 @@ def _build_content_blocks(file_path: Path, file_type: str) -> list[dict]:
             },
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# Text-extraction helpers for non-vision file types
+# ---------------------------------------------------------------------------
+
+
+# Cap how much text we send to the LLM. Bank HTML exports can be large; Claude
+# Sonnet's context is huge, but we want to keep cost predictable.
+_MAX_TEXT_CHARS = 200_000
+
+
+def _html_to_text(file_path: Path) -> str:
+    """Read an HTML file and return its visible text.
+
+    No external HTML parser dependency — uses stdlib `html.parser`. We strip
+    <script> / <style> contents and collapse whitespace. Tables (very common
+    in bank HTML exports) are flattened with tab separators between cells and
+    newlines between rows, which preserves enough structure for the LLM to
+    read out transactions.
+    """
+    raw = file_path.read_bytes()
+    # Most banks emit UTF-8 or windows-1252. Try both.
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = raw.decode("utf-8", errors="replace")
+
+    from html.parser import HTMLParser
+
+    SKIP_TAGS = {"script", "style", "noscript", "head", "meta", "link"}
+    BLOCK_TAGS = {
+        "p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article", "header", "footer", "aside", "nav",
+    }
+
+    class _Collector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.out: list[str] = []
+            self._skip_depth = 0
+
+        def handle_starttag(self, tag: str, attrs):  # noqa: ANN001
+            if tag in SKIP_TAGS:
+                self._skip_depth += 1
+                return
+            if tag == "tr":
+                self.out.append("\n")
+            elif tag in ("td", "th"):
+                self.out.append("\t")
+            elif tag == "table":
+                self.out.append("\n")
+            elif tag in BLOCK_TAGS:
+                self.out.append("\n")
+
+        def handle_endtag(self, tag: str):
+            if tag in SKIP_TAGS and self._skip_depth > 0:
+                self._skip_depth -= 1
+                return
+            if tag in ("table", "tr"):
+                self.out.append("\n")
+
+        def handle_data(self, data: str):
+            if self._skip_depth > 0:
+                return
+            if data.strip():
+                self.out.append(data)
+
+    collector = _Collector()
+    try:
+        collector.feed(text)
+    except Exception:  # noqa: BLE001
+        # Malformed HTML — fall through with whatever we got so far.
+        pass
+
+    flat = "".join(collector.out)
+    # Collapse runs of blank lines and internal whitespace within lines.
+    lines = []
+    for line in flat.splitlines():
+        compact = " ".join(line.split())
+        if compact:
+            lines.append(compact)
+    out = "\n".join(lines)
+
+    if len(out) > _MAX_TEXT_CHARS:
+        out = out[:_MAX_TEXT_CHARS] + "\n... [truncated]"
+    return out
+
+
+def _xlsx_to_text(file_path: Path) -> str:
+    """Read an .xlsx/.xls workbook and return a tab-separated dump.
+
+    Uses openpyxl (read-only) — pulls cell values across every sheet, one row
+    per line, tabs between cells. .xls (legacy) isn't supported by openpyxl;
+    we surface a clear error so the caller can fall back to the stub.
+    """
+    suffix = file_path.suffix.lower()
+    if suffix == ".xls":
+        raise ExtractorError(
+            "legacy .xls files not supported — please re-save as .xlsx"
+        )
+
+    try:
+        from openpyxl import load_workbook  # type: ignore
+    except ImportError as e:  # pragma: no cover
+        raise ExtractorError(
+            "openpyxl not installed — required for .xlsx extraction"
+        ) from e
+
+    try:
+        wb = load_workbook(filename=str(file_path), read_only=True, data_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise ExtractorError(f"could not open workbook: {e}") from e
+
+    chunks: list[str] = []
+    total_chars = 0
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        chunks.append(f"\n## Sheet: {sheet_name}\n")
+        for row in ws.iter_rows(values_only=True):
+            # Skip rows that are entirely empty.
+            if not any(cell is not None and str(cell).strip() != "" for cell in row):
+                continue
+            cells = ["" if c is None else str(c) for c in row]
+            line = "\t".join(cells) + "\n"
+            chunks.append(line)
+            total_chars += len(line)
+            if total_chars > _MAX_TEXT_CHARS:
+                chunks.append("... [truncated]\n")
+                wb.close()
+                return "".join(chunks)
+    wb.close()
+    return "".join(chunks)
 
 
 _SYSTEM_PROMPT = """\

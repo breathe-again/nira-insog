@@ -60,7 +60,9 @@ async def upload_document(
                 )
             tmp.write(chunk)
 
-    storage_url, size_bytes = save_upload(org_id, file.filename, tmp_path)
+    storage_url, size_bytes, encryption_meta = save_upload(
+        org_id, file.filename, tmp_path
+    )
     file_type = detect_file_type(file.filename, file.content_type)
 
     document = Document(
@@ -73,6 +75,7 @@ async def upload_document(
         file_type=file_type,
         document_type="unknown",
         status="received",
+        encryption_meta=encryption_meta or None,
     )
     db.add(document)
     db.commit()

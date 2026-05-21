@@ -1,5 +1,23 @@
 /** Domain types mirroring the backend Pydantic schemas. */
 
+// ---------- Auth ----------
+
+export interface AuthMeOut {
+  user_id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  org_name: string;
+  org_plan: string;
+}
+
+export interface TokensOut {
+  access_token: string;
+  access_token_expires_at: string;
+  refresh_token: string | null;
+  user: AuthMeOut;
+}
+
 export type DocumentStatus =
   | "received"
   | "extracting"
@@ -8,7 +26,7 @@ export type DocumentStatus =
   | "indexed"
   | "error";
 
-export type FileType = "pdf" | "image" | "csv" | "xlsx";
+export type FileType = "pdf" | "image" | "csv" | "xlsx" | "html";
 
 export type DocumentType =
   | "bank_statement"

@@ -7,7 +7,90 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+# ---------- Auth ----------
+
+
+class SignupIn(BaseModel):
+    """First-user signup. Creates an Org + a founder User in one shot."""
+
+    org_name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    password: str = Field(min_length=12, max_length=256)
+
+    @field_validator("org_name")
+    @classmethod
+    def _strip_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("org name cannot be blank")
+        return v
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class AuthMeOut(BaseModel):
+    """Response from /api/auth/me — also returned after signup/login."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: uuid.UUID
+    org_id: uuid.UUID
+    email: EmailStr
+    role: str
+    org_name: str
+    org_plan: str
+
+
+class TokensOut(BaseModel):
+    """Returned by signup/login/refresh. Also written to httpOnly cookies."""
+
+    access_token: str
+    access_token_expires_at: datetime
+    # We do NOT return the refresh token in the JSON body for browser clients
+    # (it goes in the httpOnly cookie). API clients can opt in by passing
+    # ?include_refresh=1 — handy for CLIs.
+    refresh_token: Optional[str] = None
+    user: AuthMeOut
+
+
+# ---------- Feedback / edit ----------
+
+
+class DocumentPatchIn(BaseModel):
+    """Fields a user can correct on a Document."""
+
+    document_type: Optional[str] = Field(default=None, max_length=40)
+    vendor_id: Optional[uuid.UUID] = None
+    category: Optional[str] = Field(default=None, max_length=100)
+
+
+class VendorPatchIn(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    default_expense_category: Optional[str] = Field(default=None, max_length=100)
+    gstin: Optional[str] = Field(default=None, max_length=20)
+    add_alias: Optional[str] = Field(default=None, max_length=255)
+
+
+class VendorMergeIn(BaseModel):
+    """POST body for /api/vendors/{id}/merge — merge `loser_id` into `id`."""
+
+    loser_id: uuid.UUID
+
+
+class InsightPatchIn(BaseModel):
+    severity: Optional[str] = Field(default=None, pattern="^(info|attention|urgent)$")
+    mute_vendor: bool = False  # if True, silences anomaly for the linked vendor
 
 
 # ---------- Organization & User ----------

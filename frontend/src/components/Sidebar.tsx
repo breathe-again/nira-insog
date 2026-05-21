@@ -1,13 +1,14 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   Activity,
   Inbox,
   LayoutDashboard,
+  LogOut,
   type LucideIcon,
   Settings,
-  Sparkles,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { useAuth } from "../contexts/AuthContext";
 
 interface NavItem {
   to: string;
@@ -34,6 +35,16 @@ const NAV: { section: string; items: NavItem[] }[] = [
 ];
 
 export default function Sidebar() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
+
+  const initials = (user?.email ?? "?").slice(0, 2).toUpperCase();
+
   return (
     <aside className="w-60 shrink-0 bg-white ring-1 ring-ink-200 flex flex-col">
       <div className="h-14 px-4 flex items-center gap-2 border-b border-ink-100">
@@ -84,16 +95,28 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      <div className="p-3 border-t border-ink-100">
-        <div className="card-hover rounded-xl bg-gradient-to-br from-brand-50 to-violet-50 ring-1 ring-brand-100 p-3">
-          <div className="flex items-center gap-2 text-xs font-semibold text-brand-800">
-            <Sparkles className="h-3.5 w-3.5" />
-            Demo workspace
+      <div className="p-3 border-t border-ink-100 space-y-2">
+        {user && (
+          <div className="flex items-center gap-2 px-2 py-2 rounded-xl bg-ink-50">
+            <div className="h-8 w-8 rounded-full bg-brand-100 text-brand-700 text-xs font-semibold flex items-center justify-center shrink-0">
+              {initials}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium text-ink-900 truncate">
+                {user.org_name}
+              </div>
+              <div className="text-[10px] text-ink-500 truncate">{user.email}</div>
+            </div>
           </div>
-          <p className="text-[11px] text-ink-600 mt-1 leading-snug">
-            Auth is stubbed in v0. All data belongs to <span className="font-medium">Demo Org</span>.
-          </p>
-        </div>
+        )}
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium text-ink-700 hover:bg-ink-100 hover:text-ink-900 transition-colors"
+        >
+          <LogOut className="h-4 w-4" />
+          Sign out
+        </button>
       </div>
     </aside>
   );

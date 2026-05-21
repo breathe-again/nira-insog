@@ -51,6 +51,7 @@ from common.models import (
     Invoice,
     Receipt,
 )
+from common.storage import open_document
 from services.anomalies import check_bank_transaction, check_receipt
 from services.extractors import llm_vision
 from services.parsers.bank_csv import parse_bank_csv
@@ -110,7 +111,7 @@ def _run_pipeline(db: Session, doc: Document) -> dict:
 
     if doc.file_type == "csv":
         return _run_bank_csv(db, doc)
-    if doc.file_type in {"pdf", "image", "xlsx"}:
+    if doc.file_type in {"pdf", "image", "xlsx", "html"}:
         return _run_extracted(db, doc)
 
     # Unknown file type — record a stub extraction and move on.
@@ -132,11 +133,10 @@ def _run_pipeline(db: Session, doc: Document) -> dict:
 
 def _run_bank_csv(db: Session, doc: Document) -> dict:
     """Parse a bank-statement CSV into BankTransaction rows."""
-    path = _local_path(doc.file_url)
-    if path is None or not path.exists():
-        raise FileNotFoundError(f"file not on disk: {doc.file_url}")
-
-    content = path.read_bytes()
+    with open_document(doc.file_url, doc.encryption_meta) as path:
+        if not path.exists():
+            raise FileNotFoundError(f"file not on disk: {doc.file_url}")
+        content = path.read_bytes()
     drafts, report = parse_bank_csv(content)
 
     if not drafts:
@@ -232,16 +232,23 @@ def _run_extracted(db: Session, doc: Document) -> dict:
     # Stage 1+2: extracting → extracted.
     existing = doc.raw_extraction_json
     if not _looks_real(existing):
-        # Try the LLM extractor.
+        # Try the LLM extractor. The extractor reads the file directly, so we
+        # hand it a decrypted copy via `open_document` — for plaintext files
+        # this is a zero-copy passthrough.
         if llm_vision.is_enabled():
-            path = _local_path(doc.file_url)
-            if path is not None and path.exists():
-                hint = _guess_document_type_from_filename(doc.original_filename)
-                payload = llm_vision.extract_safely(
-                    path, file_type=doc.file_type, document_type_hint=hint
-                )
-                if payload is not None:
-                    doc.raw_extraction_json = payload
+            hint = _guess_document_type_from_filename(doc.original_filename)
+            try:
+                with open_document(doc.file_url, doc.encryption_meta) as path:
+                    if path.exists():
+                        payload = llm_vision.extract_safely(
+                            path,
+                            file_type=doc.file_type,
+                            document_type_hint=hint,
+                        )
+                        if payload is not None:
+                            doc.raw_extraction_json = payload
+            except FileNotFoundError:
+                logger.warning("file missing on disk for doc %s", doc.id)
         # Still nothing? Fall back to stub so the rest of the pipeline runs.
         if not _looks_real(doc.raw_extraction_json):
             doc.raw_extraction_json = {

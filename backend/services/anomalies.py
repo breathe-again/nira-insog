@@ -27,7 +27,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from common.models import BankTransaction, Insight, Receipt, Vendor
+from common.models import BankTransaction, Insight, Receipt, Vendor, VendorMute
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,21 @@ def _maybe_emit(
     source_id: uuid.UUID,
 ) -> Optional[AnomalyResult]:
     """Compute stats, decide whether to flag, and (if so) persist an Insight."""
+    # Respect user mutes — once a founder says "this vendor's spikes are
+    # normal", we stop flagging them.
+    from datetime import datetime, timezone  # local import to keep top thin
+
+    mute = db.execute(
+        select(VendorMute).where(
+            VendorMute.org_id == org_id,
+            VendorMute.vendor_id == vendor.id,
+            VendorMute.rule == "anomaly",
+        )
+    ).scalar_one_or_none()
+    if mute is not None:
+        if mute.expires_at is None or mute.expires_at > datetime.now(timezone.utc):
+            return None
+
     verdict = evaluate_amount(amount, history)
     if not verdict.flagged or verdict.severity is None:
         return None

@@ -31,6 +31,7 @@ class FileType(StrEnum):
     IMAGE = "image"
     CSV = "csv"
     XLSX = "xlsx"
+    HTML = "html"
 
 
 class DocumentType(StrEnum):

@@ -28,3 +28,17 @@ anthropic==0.40.0
 # (common with long bank-statement extractions). Used as a fallback after
 # stdlib json.loads fails.
 json-repair==0.30.3
+
+# Reads .xlsx workbooks so we can flatten them to text before handing to the
+# LLM. (HTML extraction uses stdlib html.parser — no extra dep needed.)
+openpyxl==3.1.5
+
+# Auth + security (Phase A).
+# - argon2-cffi: argon2id password hashing (OWASP recommended).
+# - pyjwt: HS256 JWT encode/decode.
+# - cryptography: Fernet (AES-128-CBC + HMAC-SHA256) for file encryption at rest.
+# - slowapi: per-IP rate limiting middleware for FastAPI.
+argon2-cffi==23.1.0
+pyjwt==2.9.0
+cryptography==43.0.1
+slowapi==0.1.9
