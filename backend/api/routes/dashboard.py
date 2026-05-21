@@ -112,10 +112,7 @@ def dashboard_summary(
     db: Session = Depends(get_db),
     org_id: uuid.UUID = Depends(current_org_id),
 ) -> DashboardSummaryOut:
-    today = _today_utc()
-    month_start = today.replace(day=1)
-    thirty_days_ago = today - timedelta(days=30)
-    sixty_days_ago = today - timedelta(days=60)
+    real_today = _today_utc()
 
     bank_txn_count = int(
         db.scalar(
@@ -125,6 +122,24 @@ def dashboard_summary(
         )
         or 0
     )
+
+    # If the user's most recent transaction is older than ~30 days, anchor the
+    # rolling windows on that latest date instead of "today". Otherwise the
+    # last-30-days chart and MTD KPI would be empty for any historical upload,
+    # making the dashboard useless until they upload fresh data daily.
+    latest_txn_date = db.scalar(
+        select(func.max(BankTransaction.txn_date)).where(
+            BankTransaction.org_id == org_id
+        )
+    )
+    if latest_txn_date is not None and (real_today - latest_txn_date).days > 30:
+        today = latest_txn_date
+    else:
+        today = real_today
+
+    month_start = today.replace(day=1)
+    thirty_days_ago = today - timedelta(days=30)
+    sixty_days_ago = today - timedelta(days=60)
 
     # ------------ KPI: Cash position ------------
     latest_balance_row = db.execute(
