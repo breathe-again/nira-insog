@@ -232,8 +232,20 @@ _TAIL_GARBAGE_RE = re.compile(
 def extract_vendor_hint(description: str) -> Optional[str]:
     """Pull a best-guess vendor/counterparty name out of a free-text description.
 
-    Heuristic — not perfect, but vastly better than passing the raw description
-    through to fuzzy matching. The vendor resolver does the heavy lifting later.
+    Two patterns we recognize:
+
+      Pattern A (vendor at the front — most banks):
+          "UPI/SWIGGY/PAYMENT/REF123"      → SWIGGY
+          "NEFT-TATA POWER LTD-..."        → TATA POWER LTD
+          "IMPS/PAYTM-..."                 → PAYTM
+
+      Pattern B (vendor at the trailing segment — Tally Bank, some HDFC formats):
+          "INF/NEFT/<ref>/<ifsc>/<otherref> by <user> from <bank>/Abhijit"   → Abhijit
+          "INFT/<ref> by VINAYBAW from Tally Bank Plu/LaxmiNarayanS"        → LaxmiNarayanS
+
+    We detect Pattern B by the presence of " by <name> from <name>" in the
+    description — that's a signature of bank-side machine-generated narrations
+    where the actual destination is the last "/" segment after "from <bank>".
     """
     if not description:
         return None
@@ -241,6 +253,23 @@ def extract_vendor_hint(description: str) -> Optional[str]:
     s = description.strip()
     upper = s.upper()
 
+    # ---- Pattern B detection: "by ... from <bank>/<destination>" -----------
+    # If this is a bank-emitted INF/INFT/NEFT narration with a "by X from Y/Z"
+    # tail, the destination is what comes after the LAST "/".
+    if re.search(r"\bby\s+\S+\s+from\b", s, flags=re.IGNORECASE):
+        # Take the segment after the last "/" — that's the destination name.
+        tail = s.rsplit("/", 1)[-1].strip()
+        # Drop any trailing alphanum-ref garbage.
+        tail = _TAIL_GARBAGE_RE.sub("", tail).strip(" -:/|")
+        if tail and len(tail) >= 2:
+            # Camel-case names like "AbhijitC", "KaustavM" → split if possible.
+            hint = re.sub(r"\s+", " ", tail)
+            # Skip if the tail is itself a channel-code (means the narration
+            # had no real destination name).
+            if hint.upper() not in {"INF", "INFT", "NEFT", "RTGS", "IMPS", "TRF", "TRFR"}:
+                return hint
+
+    # ---- Pattern A: vendor at the front ---------------------------------
     # Strip a leading channel prefix and the separator that follows it.
     for prefix in _CHANNEL_PREFIXES:
         if upper.startswith(prefix):
@@ -264,6 +293,10 @@ def extract_vendor_hint(description: str) -> Optional[str]:
 
     # Skip obvious non-vendor tokens.
     if hint.lower() in ("opening balance", "closing balance", "balance b/f", "balance c/f"):
+        return None
+
+    # Skip generic bank-side prefixes that aren't real vendors.
+    if hint.upper() in {"INF", "INFT", "TRF", "TRFR"}:
         return None
 
     return hint

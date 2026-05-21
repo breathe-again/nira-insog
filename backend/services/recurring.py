@@ -20,6 +20,7 @@ Once we have patterns:
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 import uuid
 from dataclasses import dataclass
@@ -309,22 +310,43 @@ def emit_missed_payment_insights(
 def _description_prefix(description: str) -> str:
     """Best-effort label from a bank-txn description.
 
-    Strips UPI/NEFT/IMPS prefixes and a leading transfer token, keeps the
-    first 'meaningful' segment. e.g. 'NEFT/TATA POWER/...' → 'TATA POWER'.
+    Two patterns recognized:
+
+      A) Vendor at the front (most common):
+         "NEFT/TATA POWER/..." → "TATA POWER"
+         "UPI/SWIGGY/..."      → "SWIGGY"
+
+      B) Vendor at the trailing segment (Tally Bank's "INF/NEFT/.../from
+         Tally Bank/<destination>" format and similar):
+         "INF/NEFT/<ref>/<ifsc>/... from Tally Bank Plu/AbhijitC" → "ABHIJITC"
+
+    Pattern B is detected by the "by <user> from <bank>" signature.
     """
     if not description:
         return ""
-    s = description.strip().upper()
-    # Common transaction-channel prefixes to drop.
-    for prefix in ("NEFT/", "RTGS/", "IMPS/", "UPI/", "TRFR TO:", "TRFR FROM:", "POS "):
-        if s.startswith(prefix):
-            s = s[len(prefix) :]
+
+    s = description.strip()
+
+    # Pattern B: bank-emitted narration with destination at the tail.
+    if re.search(r"\bby\s+\S+\s+from\b", s, flags=re.IGNORECASE):
+        tail = s.rsplit("/", 1)[-1].strip()
+        upper = tail.upper()
+        if upper and len(upper) >= 2 and upper not in {
+            "INF", "INFT", "NEFT", "RTGS", "IMPS", "TRF", "TRFR"
+        }:
+            return upper[:80]
+        # Fall through to Pattern A if the tail is itself a channel code.
+
+    # Pattern A: strip channel-prefix, take first segment.
+    s_upper = s.upper()
+    for prefix in ("INF/", "INFT/", "NEFT/", "RTGS/", "IMPS/", "UPI/", "TRFR TO:", "TRFR FROM:", "POS "):
+        if s_upper.startswith(prefix):
+            s_upper = s_upper[len(prefix) :]
             break
-    # Take the first segment up to "/" or "-".
     for sep in ("/", "-", " - "):
-        if sep in s:
-            s = s.split(sep, 1)[0].strip()
-    return s[:80]
+        if sep in s_upper:
+            s_upper = s_upper.split(sep, 1)[0].strip()
+    return s_upper[:80]
 
 
 def _label_for_group(
