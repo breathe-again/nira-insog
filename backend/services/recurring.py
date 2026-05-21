@@ -260,10 +260,19 @@ def emit_missed_payment_insights(
 
         amount_str = _format_inr_short(pat.median_amount)
         title = f"Missed payment: {pat.label}"
+        # Plain-English: avoid jargon, suggest a next step.
+        if days_late < 10:
+            urgency = f"a few days behind ({days_late} days, to be exact)"
+        elif days_late < 35:
+            urgency = f"about {days_late} days overdue now"
+        else:
+            urgency = f"more than a month overdue ({days_late} days)"
         body = (
-            f"Your usual {amount_str} payment to {pat.label} (around day "
-            f"{pat.expected_day_of_month} of each month) hasn't appeared. "
-            f"It's {days_late} days late."
+            f"Your {amount_str} payment to {pat.label} normally goes out around "
+            f"the {_ordinal(pat.expected_day_of_month or 1)} of every month, "
+            f"but this cycle's payment hasn't shown up yet. It's {urgency}. "
+            f"Either the payment was paused, the bank statement isn't uploaded yet, "
+            f"or this needs your attention."
         )
         db.add(
             Insight(
@@ -371,6 +380,14 @@ def _expected_next_date(pat: RecurringPattern, *, as_of: date) -> Optional[date]
         return date(year, month, target_day)
     except ValueError:
         return date(year, month, 28)
+
+
+def _ordinal(n: int) -> str:
+    """1 → '1st', 2 → '2nd', 3 → '3rd', 11 → '11th', etc."""
+    if 10 <= (n % 100) <= 20:
+        return f"{n}th"
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def _format_inr_short(amount: Decimal) -> str:

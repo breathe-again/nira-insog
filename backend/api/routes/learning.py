@@ -107,25 +107,37 @@ class RetrainOut(BaseModel):
 
 
 def _explain_threshold(z: float, cv: float) -> str:
-    """Human-readable why-this-threshold."""
+    """Human-readable why-this-threshold.
+
+    No stats jargon (σ, CV, z) in the user-facing copy. The numbers are
+    still available in the dedicated stat tiles for those who want them.
+    """
     if cv <= 0.5:
         return (
-            f"Your spending is very regular (CV={cv:.2f}). "
-            f"Threshold tightened to {z:.1f}σ to catch even small anomalies."
+            "Your spending is very regular — similar amounts going out month "
+            "after month. We've tightened the alert sensitivity, so even "
+            "small unusual payments will be flagged for review."
         )
     if cv <= 1.0:
         return (
-            f"Typical SMB cash-flow variability (CV={cv:.2f}). "
-            f"Using default {z:.1f}σ threshold."
+            "Your spending is a typical mix for an SMB — mostly steady with "
+            "the occasional larger payment. We're using the default alert "
+            "sensitivity, which is a good balance between catching real "
+            "issues and not bothering you with normal variation."
         )
     if cv <= 2.0:
         return (
-            f"Lumpy cash flow (CV={cv:.2f}). "
-            f"Threshold raised to {z:.1f}σ so normal swings don't false-alarm."
+            "Your cash flow is lumpy — some months are quiet, others have "
+            "big payments. We've relaxed the alert sensitivity a bit so you "
+            "don't get pinged about payments that are unusual in size but "
+            "totally normal for your business."
         )
     return (
-        f"Very lumpy cash flow (CV={cv:.2f}) — mix of small and very large txns. "
-        f"Threshold raised to {z:.1f}σ; only true outliers will be flagged."
+        "Your spending is very uneven — lots of small recurring expenses "
+        "mixed with occasional very large payments (like big investments "
+        "or tax instalments). We've adjusted the alerts so only truly "
+        "out-of-line payments get flagged. Routine large outflows stay "
+        "in the background."
     )
 
 

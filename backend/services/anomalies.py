@@ -329,10 +329,9 @@ def _maybe_emit(
             "z_score": round(z, 2),
             "sample_size": n,
             "observed_on": observed_on.isoformat(),
-            # Stash the technical version too for the "Why this insight?"
-            # detail pane (Phase C). Frontend can show on hover/click.
-            "technical": (
-                f"+{pct_above:.0f}% vs typical (n={n}, σ=₹{sigma:,.2f}, z={z:.1f})"
+            # English-language detail pane, no stats jargon.
+            "technical": _humanize_why(
+                n=n, mu=mu, sigma=sigma, pct_above=pct_above
             ),
         },
     )
@@ -477,14 +476,18 @@ def rehumanize_existing_insights(db: Session, *, org_id: uuid.UUID) -> int:
             # Ensure the 'technical' tooltip is stashed for the "Why this insight?"
             # collapsible on the new /insights page.
             sd_mut = dict(sd)
-            if "technical" not in sd_mut:
-                stddev = sd.get("stddev", "0")
-                n = sd.get("sample_size", "?")
-                z = sd.get("z_score", "?")
-                sd_mut["technical"] = (
-                    f"+{pct_above:.0f}% vs typical (n={n}, σ=₹{float(stddev):,.2f}, z={z})"
-                )
-                ins.supporting_data = sd_mut
+            try:
+                n_val = int(sd.get("sample_size", 0) or 0)
+            except (TypeError, ValueError):
+                n_val = 0
+            try:
+                stddev_val = float(sd.get("stddev", 0) or 0)
+            except (TypeError, ValueError):
+                stddev_val = 0.0
+            sd_mut["technical"] = _humanize_why(
+                n=n_val, mu=mu, sigma=stddev_val, pct_above=pct_above
+            )
+            ins.supporting_data = sd_mut
             rewritten += 1
     db.flush()
     return rewritten
@@ -501,26 +504,71 @@ def _humanize_anomaly_body(
 ) -> str:
     """Build a plain-English description of an anomaly insight.
 
+    Tone: like a CA pointing at a row in your statement saying "hmm, this
+    one's odd, want to check it?" — not statistics.
+
     Examples produced:
-      - "₹1.00 Cr to SGB on Apr 22, 2025 — about 5× your usual payment
-         (typically around ₹21.0 L)."
-      - "₹85,000 to Cafe Coffee Day on May 12, 2026 — roughly 3× your usual
-         spend at this vendor (typically around ₹28,000)."
+      - "You sent ₹1.00 Cr to SGB on 22 Apr 2025. That's about 5 times more
+         than your usual payment to this vendor (around ₹21.0 L). Worth a
+         quick check — if it was intentional, mute this vendor to stop
+         the alerts."
+      - "An unusually large ₹85,000 went to Cafe Coffee Day on 12 May 2026.
+         You normally spend around ₹28,000 there — this one is about 3 times
+         bigger. Worth a quick check."
     """
     amount_str = _format_inr(float(amount))
     typical_str = _format_inr(mu)
-    date_str = _format_date_human(observed_on)
+    date_str = _format_date_short(observed_on)
+    # Soften pure-noise vendor strings ("INF", "TRFR", etc.) — if the label
+    # is < 4 chars or all caps initialism, qualify it.
+    vendor_phrase = (
+        f"to {vendor_name}"
+        if len(vendor_name) >= 4 and not vendor_name.isupper() or len(vendor_name) >= 6
+        else f"to the vendor labelled “{vendor_name}”"
+    )
 
-    # Choose a human comparison: prefer multiples for big spikes (>= 2×),
-    # else use the percentage.
+    # Pick the natural English comparison.
     if multiple >= 10:
-        comparison = f"about {multiple:.0f}× your usual payment"
+        # "174 times more" reads better than "about 174×".
+        comparison = f"That's roughly {multiple:.0f} times bigger than your usual payment"
+    elif multiple >= 3:
+        comparison = f"That's about {multiple:.1f} times your usual payment"
     elif multiple >= 2:
-        comparison = f"about {multiple:.1f}× your usual payment"
+        comparison = f"That's about {multiple:.1f}× — roughly {pct_above:.0f}% more than usual"
     else:
-        comparison = f"about {pct_above:.0f}% above your usual payment"
+        comparison = f"That's about {pct_above:.0f}% more than your usual payment"
+
+    nudge = "Worth a quick check — if it was intentional, mute this vendor to stop the alerts."
 
     return (
-        f"{amount_str} to {vendor_name} on {date_str} — "
-        f"{comparison} (typically around {typical_str})."
+        f"You sent {amount_str} {vendor_phrase} on {date_str}. "
+        f"{comparison} to this vendor (you normally pay around {typical_str}). "
+        f"{nudge}"
+    )
+
+
+def _format_date_short(d: date) -> str:
+    """'22 Apr 2025' — the short Indian-friendly date format."""
+    return f"{d.day} {_MONTHS[d.month - 1]} {d.year}"
+
+
+def _humanize_why(*, n: int, mu: float, sigma: float, pct_above: float) -> str:
+    """Plain-English version of n / σ / z stats — for the 'Why this insight?'
+    expandable drawer on the insights page."""
+    if n <= 0 or mu <= 0:
+        return (
+            "We don't have enough history with this vendor yet, so we "
+            "couldn't compare confidently."
+        )
+    typical = _format_inr(mu)
+    # Describe the normal swing in plain words.
+    if sigma <= 0:
+        swing = "consistent"
+    else:
+        swing_str = _format_inr(sigma)
+        swing = f"with a normal up-and-down swing of about ±{swing_str}"
+    return (
+        f"We looked at your last {n} payments to this vendor. The typical "
+        f"amount is around {typical}, {swing}. This payment is roughly "
+        f"{pct_above:.0f}% above that — well outside the normal range."
     )
