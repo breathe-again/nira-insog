@@ -1,0 +1,38 @@
+[project]
+name = "nira-insig-backend"
+version = "0.1.0"
+description = "Nira Insig backend — FastAPI service for the financial insight engine."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.4",
+  "uvicorn[standard]==0.32.0",
+  "pydantic==2.9.2",
+  "pydantic-settings==2.6.1",
+  "email-validator==2.2.0",
+  "sqlalchemy==2.0.36",
+  "alembic==1.13.3",
+  "psycopg[binary]==3.2.3",
+  "redis==5.2.0",
+  "celery==5.4.0",
+  "python-multipart==0.0.17",
+  "httpx==0.27.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+  "pytest-asyncio==0.24.0",
+  "ruff==0.7.3",
+  "mypy==1.13.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

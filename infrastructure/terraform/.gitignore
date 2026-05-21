@@ -1,0 +1,13 @@
+# Terraform local state — don't commit.
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+crash.log
+
+# Per-user input — must contain secrets (IP, etc.).
+terraform.tfvars
+*.auto.tfvars
+
+# Plan outputs.
+*.tfplan

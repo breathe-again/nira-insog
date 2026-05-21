@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Docker
+*.pid
+
+# Local persistent data (uploads, DB backups). The .local-data/ folder is kept
+# in the repo for path stability; everything inside it is per-developer.
+.local-data/uploads/
+.local-data/backups/
+
+# Logs
+*.log

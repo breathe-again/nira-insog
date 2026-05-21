@@ -1,0 +1,22 @@
+# Copy this to terraform.tfvars and fill in real values.
+# DO NOT commit terraform.tfvars (it's in .gitignore).
+
+# Existing EC2 key pair name in ap-south-1.
+# Create one in the AWS Console first (EC2 → Key Pairs → Create) and download
+# the .pem to ~/.ssh/. Then put the NAME here (no .pem extension).
+key_pair_name = "nira-aws"
+
+# Your laptop's public IP, with /32 mask. Find it with:
+#   curl -s https://ipv4.icanhazip.com
+# Example: "203.0.113.42/32"
+ssh_allowed_cidr = "YOUR.IP.HERE/32"
+
+# Public HTTPS URL of your repo. Must be readable WITHOUT auth (public repo)
+# OR you'll need to set up a deploy key on the EC2 first.
+repo_url = "https://github.com/YOUR_USER/nira-insig.git"
+
+# Optional overrides — defaults are fine for v0.
+# aws_region    = "ap-south-1"
+# instance_type = "t3.small"
+# root_disk_gb  = 20
+# repo_branch   = "main"

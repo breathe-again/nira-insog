@@ -1,0 +1,107 @@
+# Production stack for the AWS EC2 deployment.
+#
+# Differences from the dev docker-compose.yml at the repo root:
+#   • NO postgres service — we use Neon (managed Postgres).
+#   • Adds caddy — reverse proxy that handles TLS via Let's Encrypt.
+#   • No code bind mounts — the image contains the code.
+#   • No --reload — production uses uvicorn workers.
+#   • Uploads persist on the EC2 host's EBS volume at /var/nira/uploads.
+#
+# Usage on the EC2 box (after .env.prod is in place):
+#   cd /opt/nira-insig
+#   docker compose -f infrastructure/deploy/docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Required env vars (set in /opt/nira-insig/.env.prod):
+#   PUBLIC_HOST          insig.nirabalance.com
+#   ACME_EMAIL           you@nirabalance.com   (Let's Encrypt notifications)
+#   DATABASE_URL         Neon POOLED connection string (sslmode=require)
+#   REDIS_URL            redis://redis:6379/0
+#   ANTHROPIC_API_KEY    your key, when you wire OCR/LLM
+#   CORS_ORIGINS         https://insig.nirabalance.com
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: nira-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    image: nira-insig-api:latest
+    container_name: nira-api
+    restart: unless-stopped
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    environment:
+      APP_ENV: prod
+      LOG_LEVEL: INFO
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      UPLOAD_ROOT: /app/uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - /var/nira/uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: nira-insig-api:latest        # same image as api
+    container_name: nira-worker
+    restart: unless-stopped
+    entrypoint: []                       # skip alembic; api ran it
+    command: celery -A worker.app.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      APP_ENV: prod
+      LOG_LEVEL: INFO
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      UPLOAD_ROOT: /app/uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - /var/nira/uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: nira-insig-frontend:latest
+    container_name: nira-frontend
+    restart: unless-stopped
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile.prod
+    environment:
+      # The frontend talks to the API via Caddy on the same host, so it uses
+      # the public origin (which Caddy proxies to api:8000).
+      VITE_API_BASE: https://${PUBLIC_HOST}
+    # No ports exposed — caddy reverse-proxies to it.
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nira-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:

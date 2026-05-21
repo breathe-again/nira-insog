@@ -1,0 +1,129 @@
+# Nira Insig — local development stack.
+# Run from the repo root:
+#   docker compose up
+#
+# Services:
+#   postgres  — Postgres 16 (persistent volume)
+#   redis     — Redis 7 (broker + cache)
+#   api       — FastAPI app; runs `alembic upgrade head` before serving
+#   worker    — Celery worker; runs the same code as the api container
+#   frontend  — Vite dev server (React + TS + Tailwind)
+#
+# Endpoints when running:
+#   http://localhost:5173            — Frontend (Inbox view)
+#   http://localhost:8000            — API root
+#   http://localhost:8000/health     — liveness
+#   http://localhost:8000/api/health — readiness (postgres + redis)
+#   http://localhost:8000/docs       — Swagger UI
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nira-postgres
+    environment:
+      POSTGRES_USER: nira
+      POSTGRES_PASSWORD: nira
+      POSTGRES_DB: nira_insig
+    ports:
+      - "5432:5432"
+    volumes:
+      - nira-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nira -d nira_insig"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: nira-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    container_name: nira-api
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+psycopg://nira:nira@postgres:5432/nira_insig
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      UPLOAD_ROOT: /app/uploads
+      # Forwarded from the host's .env file. Empty string disables the LLM
+      # extractor (worker falls back to the stub payload).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      # Bind mount → visible in Finder at ./.local-data/uploads/
+      # Survives `make clean` because it lives on the host, not in a Docker volume.
+      - ./.local-data/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    container_name: nira-worker
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Skip migrations in the worker; the api container runs them.
+    entrypoint: []
+    command: celery -A worker.app.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+psycopg://nira:nira@postgres:5432/nira_insig
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_ROOT: /app/uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./backend:/app
+      # Same bind mount as the api service — both can read/write.
+      - ./.local-data/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  frontend:
+    container_name: nira-frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      VITE_API_BASE: http://localhost:8000
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      # Named volume for node_modules. The Dockerfile.dev CMD runs
+      # `npm install` on each start, so this volume self-heals when
+      # package.json changes.
+      - nira-node-modules:/app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  # Postgres data stays in a Docker volume for filesystem performance.
+  # Use `make backup-db` to snapshot it to ./.local-data/backups/ on demand.
+  nira-pgdata:
+  # node_modules is a docker volume because the Mac and the Linux container
+  # use different native binaries — bind-mounting would break npm.
+  nira-node-modules:

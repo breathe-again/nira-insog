@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install deps during the build (gives the named volume something to seed from).
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Source is bind-mounted in docker-compose; this COPY just makes the image
+# self-contained for builds outside compose.
+COPY . .
+
+EXPOSE 5173
+
+# On every container start, run `npm install` (fast no-op if deps are unchanged,
+# and picks up new packages automatically when package.json changes), then start
+# the Vite dev server. This avoids the classic "I added a dep but the container
+# is still using the old node_modules volume" foot-gun.
+CMD ["sh", "-c", "npm install --no-audit --no-fund && npm run dev"]

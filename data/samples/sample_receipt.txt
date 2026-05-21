@@ -1,0 +1,15 @@
+Receipt — Cafe Coffee Day, Indiranagar
+GSTIN: 29AABCC1234D1Z5
+Date: 2026-05-18
+Bill #: CCD-2026-05-1849
+
+Items
+  Cappuccino x 2          @ 180   = 360.00
+  Veg sandwich x 1        @ 120   = 120.00
+
+Subtotal                            480.00
+GST (5%)                             24.00
+Total                               504.00
+
+Payment: UPI · founder@okhdfcbank
+Thank you — please come again.

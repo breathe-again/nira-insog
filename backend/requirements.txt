@@ -1,0 +1,25 @@
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.6.1
+email-validator==2.2.0
+sqlalchemy==2.0.36
+alembic==1.13.3
+psycopg[binary]==3.2.3
+redis==5.2.0
+celery==5.4.0
+python-multipart==0.0.17
+httpx==0.27.2
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# Understanding (Level 3): fuzzy vendor resolution.
+# Anomaly stats use stdlib `statistics`; CSV parsing uses stdlib `csv` —
+# pandas/numpy intentionally avoided to keep image size + disk usage low.
+rapidfuzz==3.10.1
+
+# LLM-based extraction for PDFs / images.
+# Sends the document directly to Anthropic's vision API (no Tesseract).
+# Disabled at runtime if ANTHROPIC_API_KEY is unset — the worker falls back
+# to the stub payload so the rest of the pipeline still runs.
+anthropic==0.40.0

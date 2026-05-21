@@ -1,0 +1,92 @@
+#cloud-config
+# This runs on the EC2's very first boot (and never again).
+# It installs Docker, pulls the repo, and stages everything so the user just
+# has to SSH in, fill .env.prod, and `sudo systemctl start nira-insig`.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - ufw
+  - git
+  - jq
+
+write_files:
+  - path: /etc/systemd/system/nira-insig.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Nira Insig (docker compose prod stack)
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/nira-insig
+      EnvironmentFile=/opt/nira-insig/.env.prod
+      ExecStart=/usr/bin/docker compose -f infrastructure/deploy/docker-compose.prod.yml --env-file .env.prod up -d --build
+      ExecStop=/usr/bin/docker compose -f infrastructure/deploy/docker-compose.prod.yml --env-file .env.prod down
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # ---- Docker installation ----
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - chmod a+r /etc/apt/keyrings/docker.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - usermod -aG docker ubuntu
+
+  # ---- Filesystem layout ----
+  - mkdir -p /var/nira/uploads
+  - chown -R ubuntu:ubuntu /var/nira/uploads
+  - mkdir -p /opt/nira-insig
+  - chown ubuntu:ubuntu /opt/nira-insig
+
+  # ---- Clone the repo as the ubuntu user ----
+  - sudo -u ubuntu git clone --branch ${repo_branch} ${repo_url} /opt/nira-insig
+
+  # ---- Seed .env.prod from the example (user fills in real values after SSH) ----
+  - cp /opt/nira-insig/infrastructure/deploy/.env.prod.example /opt/nira-insig/.env.prod
+  - chown ubuntu:ubuntu /opt/nira-insig/.env.prod
+  - chmod 600 /opt/nira-insig/.env.prod
+
+  # ---- Firewall: only 22, 80, 443 ----
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable
+
+  # ---- Systemd unit ready (do NOT start — .env.prod is still a template) ----
+  - systemctl daemon-reload
+  - systemctl enable nira-insig.service
+
+  # ---- Print a banner the user sees on first login ----
+  - |
+    cat > /etc/motd <<'BANNER'
+
+    =============================================
+      Nira Insig — production host
+    =============================================
+
+    NEXT STEPS:
+      1. Edit /opt/nira-insig/.env.prod
+         (DATABASE_URL, PUBLIC_HOST, ACME_EMAIL)
+      2. sudo systemctl start nira-insig
+      3. cd /opt/nira-insig && docker compose -f infrastructure/deploy/docker-compose.prod.yml logs -f
+
+    BANNER
+
+final_message: "cloud-init done in $UPTIME seconds. SSH back in and finish .env.prod."

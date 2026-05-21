@@ -1,0 +1,50 @@
+# Caddy reverse proxy + automatic Let's Encrypt TLS.
+#
+# Routes:
+#   /api/*    → FastAPI (api service, port 8000)
+#   /docs     → FastAPI Swagger UI
+#   everything else → Vite frontend (port 80 in container)
+#
+# {$PUBLIC_HOST} and {$ACME_EMAIL} are read from the environment at startup.
+
+{
+    email {$ACME_EMAIL}
+    # Uncomment for staging certs while testing (avoids Let's Encrypt rate limits):
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$PUBLIC_HOST} {
+    encode gzip zstd
+
+    # Reasonable max body size for file uploads (matches API_MAX_FILE_SIZE).
+    request_body {
+        max_size 30MB
+    }
+
+    # API + docs go to FastAPI.
+    @api {
+        path /api/* /docs /openapi.json /health
+    }
+    handle @api {
+        reverse_proxy api:8000
+    }
+
+    # Everything else goes to the frontend.
+    handle {
+        reverse_proxy frontend:80
+    }
+
+    # Security headers.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}
