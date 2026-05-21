@@ -111,9 +111,23 @@ def create_app() -> FastAPI:
         except Exception as e:  # noqa: BLE001
             checks["postgres"] = f"error: {e.__class__.__name__}"
 
+        # Use a SYNC Redis client for the health check. The async client
+        # (redis.asyncio) has a known TLS handshake quirk with Upstash's
+        # `rediss://` endpoint that's unrelated to the broker actually working
+        # — Celery's sync client connects fine. Probing with the same client
+        # type Celery uses keeps the readiness signal honest.
         try:
-            pong = await app.state.redis.ping()
+            import redis as redis_sync  # local import — only needed here
+
+            sync_client = redis_sync.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+            )
+            pong = sync_client.ping()
             checks["redis"] = "ok" if pong else "error: no pong"
+            sync_client.close()
         except Exception as e:  # noqa: BLE001
             checks["redis"] = f"error: {e.__class__.__name__}"
 
