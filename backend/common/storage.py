@@ -156,6 +156,11 @@ def detect_file_type(filename: str, content_type: str | None = None) -> str:
         return "xlsx"
     if ext in {".html", ".htm"}:
         return "html"
+    if ext == ".xml":
+        # All XML uploads route to the "tally" type — our parser sniffs the
+        # actual XML payload for the Tally signature and falls back to a
+        # generic XML reader if it isn't a Tally export.
+        return "tally"
     # Fallbacks via content type
     if content_type:
         if "pdf" in content_type:
@@ -168,4 +173,6 @@ def detect_file_type(filename: str, content_type: str | None = None) -> str:
             return "xlsx"
         if "html" in content_type:
             return "html"
+        if "xml" in content_type:
+            return "tally"
     return "pdf"  # default; will be reclassified by extraction

@@ -55,6 +55,7 @@ from common.storage import open_document
 from services.anomalies import check_bank_transaction, check_receipt
 from services.extractors import llm_vision
 from services.parsers.bank_csv import parse_bank_csv
+from services.parsers.tally_xml import is_tally_xml, parse_tally_xml
 from services.parsers.extracted_json import (
     BankStatementDraft,
     ComplianceDraft,
@@ -122,6 +123,8 @@ def _run_pipeline(db: Session, doc: Document) -> dict:
 
     if doc.file_type == "csv":
         return _run_bank_csv(db, doc)
+    if doc.file_type == "tally":
+        return _run_tally_xml(db, doc)
     if doc.file_type in {"pdf", "image", "xlsx", "html"}:
         return _run_extracted(db, doc)
 
@@ -251,6 +254,149 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
         "rows_skipped": report.rows_skipped,
         "anomalies": anomalies_emitted,
         "missed_recurring": missed_emitted,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tally XML path — Day Book / Voucher exports
+# ---------------------------------------------------------------------------
+
+
+def _run_tally_xml(db: Session, doc: Document) -> dict:
+    """Parse a Tally Day Book / Voucher export and emit normalized rows.
+
+    Vouchers route as:
+      Payment / Receipt / Contra → BankTransaction
+      Sales                       → Invoice (type='sales')
+      Purchase                    → Invoice (type='purchase')
+      Journal / Stock Journal     → skipped (not a cash event)
+
+    Each voucher's PARTYLEDGERNAME is run through resolve_vendor/resolve_client
+    so the same counterparty in Tally maps to the same Vendor/Client row that
+    existing bank-statement uploads created — automatic merging.
+    """
+    from decimal import Decimal as _Dec
+
+    with open_document(doc.file_url, doc.encryption_meta) as path:
+        if not path.exists():
+            raise FileNotFoundError(f"file not on disk: {doc.file_url}")
+        content = path.read_bytes()
+
+    if not is_tally_xml(content):
+        # Not actually a Tally export — record gracefully and stop.
+        doc.raw_extraction_json = {
+            "kind": "xml",
+            "note": "uploaded .xml is not a Tally export (no <TALLYREQUEST> / <VOUCHER> tags found)",
+        }
+        doc.document_type = "unknown"
+        doc.status = "extracted"
+        db.commit()
+        doc.status = "understood"
+        db.commit()
+        return {"entities_created": 0}
+
+    parsed = parse_tally_xml(content)
+
+    # Stage 2: record extraction summary.
+    doc.document_type = "tally_export"
+    doc.raw_extraction_json = {
+        "kind": "tally_xml",
+        "vouchers": parsed.voucher_count,
+        "bank_txns_parsed": len(parsed.bank_txns),
+        "invoices_parsed": len(parsed.invoices),
+        "skipped": parsed.skipped[:20],
+        "errors": parsed.errors[:20],
+    }
+    doc.status = "extracted"
+    db.commit()
+
+    # Stage 3: understand — persist + resolve counterparties.
+    inserted_txns: list[BankTransaction] = []
+    inserted_invoices = 0
+
+    for d in parsed.bank_txns:
+        vendor = None
+        client = None
+        if d.counterparty_name:
+            if d.direction == "debit":
+                vendor = resolve_vendor(db, doc.org_id, d.counterparty_name)
+            else:
+                client = resolve_client(db, doc.org_id, d.counterparty_name)
+        inherited_category = (
+            vendor.default_expense_category
+            if vendor is not None and vendor.default_expense_category
+            else None
+        )
+        txn = BankTransaction(
+            org_id=doc.org_id,
+            document_id=doc.id,
+            txn_date=d.txn_date,
+            description=d.description,
+            amount=_Dec(d.amount),
+            direction=d.direction,
+            running_balance=d.running_balance,
+            matched_vendor_id=vendor.id if vendor else None,
+            matched_client_id=client.id if client else None,
+            category=inherited_category,
+            auto_tagged_by=("vendor_default" if inherited_category else None),
+        )
+        db.add(txn)
+        inserted_txns.append(txn)
+
+    for inv_draft in parsed.invoices:
+        vendor_id = None
+        client_id = None
+        if inv_draft.vendor_name:
+            if inv_draft.type == "purchase":
+                v = resolve_vendor(db, doc.org_id, inv_draft.vendor_name)
+                vendor_id = v.id if v else None
+            else:
+                c = resolve_client(db, doc.org_id, inv_draft.vendor_name)
+                client_id = c.id if c else None
+        invoice = Invoice(
+            org_id=doc.org_id,
+            document_id=doc.id,
+            type=inv_draft.type,
+            invoice_number=inv_draft.invoice_number,
+            vendor_id=vendor_id,
+            client_id=client_id,
+            issue_date=inv_draft.issue_date,
+            subtotal=_Dec(inv_draft.total),
+            tax=_Dec("0"),
+            total=_Dec(inv_draft.total),
+            currency="INR",
+            line_items=None,
+        )
+        db.add(invoice)
+        inserted_invoices += 1
+
+    db.flush()
+
+    # Stage 3a: embed the freshly-inserted bank txns for semantic search.
+    _embed_new_txns(db, inserted_txns)
+
+    # Stage 3b: re-learn recurring patterns + tag.
+    upsert_patterns(db, org_id=doc.org_id)
+    tag_recurring_transactions(db, org_id=doc.org_id, txns=inserted_txns)
+
+    # Stage 3c: anomaly detection on the new bank rows only.
+    anomalies_emitted = 0
+    for txn in inserted_txns:
+        if txn.is_recurring:
+            continue
+        result = check_bank_transaction(db, doc.org_id, txn)
+        if result is not None:
+            anomalies_emitted += 1
+
+    doc.status = "understood"
+    db.commit()
+
+    return {
+        "entities_created": len(inserted_txns) + inserted_invoices,
+        "bank_txns": len(inserted_txns),
+        "invoices": inserted_invoices,
+        "vouchers_skipped": len(parsed.skipped),
+        "anomalies": anomalies_emitted,
     }
 
 

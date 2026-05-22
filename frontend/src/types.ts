@@ -228,6 +228,133 @@ export interface BackfillHashesOut {
   errors: number;
 }
 
+// ---------- Tax ----------
+
+export interface CounterpartyGSTINOut {
+  id: string;
+  role: "vendor" | "client";
+  name: string;
+  gstin_raw: string | null;
+  is_valid: boolean;
+  reason: string | null;
+  state_code: string | null;
+  state_name: string | null;
+  pan: string | null;
+}
+
+export interface GSTINHealthOut {
+  counterparties: CounterpartyGSTINOut[];
+  total: number;
+  valid: number;
+  invalid: number;
+  missing: number;
+  compliance_pct: number;
+}
+
+export interface TaxInstallmentOut {
+  label: string;
+  due_date: string;
+  cumulative_pct: number;
+  cumulative_amount: string | number;
+  this_installment: string | number;
+  status: "upcoming" | "due_soon" | "overdue" | "complete";
+  days_until_due: number;
+}
+
+export interface AdvanceTaxOut {
+  fy_label: string;
+  fy_start: string;
+  fy_end: string;
+  days_elapsed: number;
+  days_remaining: number;
+  revenue_ytd: string | number;
+  expense_ytd: string | number;
+  net_profit_ytd: string | number;
+  projected_annual_profit: string | number;
+  entity_type: string;
+  estimated_tax_rate: number;
+  estimated_annual_tax: string | number;
+  installments: TaxInstallmentOut[];
+  next_due: TaxInstallmentOut | null;
+  total_overdue: string | number;
+}
+
+export interface VendorTDSRowOut {
+  vendor_id: string;
+  vendor_name: string;
+  pan: string | null;
+  section_code: string;
+  section_label: string;
+  fy_payments_total: string | number;
+  threshold: string | number;
+  has_crossed_threshold: boolean;
+  applicable_rate: number;
+  tds_amount_estimated: string | number;
+  net_payable_after_tds: string | number;
+  form_quarterly: string;
+  deduction_status: string;
+  notes: string | null;
+}
+
+export interface TDSDraftOut {
+  fy_label: string;
+  rows: VendorTDSRowOut[];
+  total_vendors: number;
+  vendors_crossed_threshold: number;
+  total_tds_estimated: string | number;
+}
+
+// ---------- Sessions + Team ----------
+
+export interface SessionInfoOut {
+  id: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string;
+  is_current: boolean;
+}
+
+export interface SessionListOut {
+  sessions: SessionInfoOut[];
+  total: number;
+}
+
+export interface MemberOut {
+  id: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+  last_login_at: string | null;
+  created_at: string;
+}
+
+export interface InviteOut {
+  id: string;
+  email: string;
+  role: string;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  invite_url: string;
+  token: string;
+}
+
+export interface TeamOverviewOut {
+  members: MemberOut[];
+  pending_invites: InviteOut[];
+}
+
+export interface InviteCheckOut {
+  org_name: string;
+  email: string;
+  role: string;
+  expires_at: string;
+  already_accepted: boolean;
+}
+
 // ---------- Learning ----------
 
 export interface PatternRowOut {

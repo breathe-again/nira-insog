@@ -15,6 +15,7 @@ import type {
   AuthMeOut,
   BackfillEmbeddingsOut,
   BackfillHashesOut,
+  AdvanceTaxOut,
   CategoryDetailOut,
   DashboardSummaryOut,
   DeleteDuplicateOut,
@@ -22,11 +23,13 @@ import type {
   DocumentListOut,
   DocumentOut,
   DuplicateClustersOut,
+  GSTINHealthOut,
   InsightListOut,
   InvestmentActivityOut,
   LearningStatusOut,
   RetrainOut,
   SearchOut,
+  TDSDraftOut,
   TokensOut,
 } from "./types";
 
@@ -216,6 +219,18 @@ export const api = {
       `/api/documents/backfill-hashes?limit=${limit}`,
       { method: "POST" },
     ),
+
+  // ---------- Tax ----------
+  gstinHealth: () => request<GSTINHealthOut>("/api/tax/gstin-health"),
+
+  advanceTax: (
+    entityType: "company" | "individual" | "professional" | "llp" = "company",
+  ) =>
+    request<AdvanceTaxOut>(
+      `/api/tax/advance-tax?entity_type=${entityType}`,
+    ),
+
+  tdsDraft: () => request<TDSDraftOut>("/api/tax/tds-draft"),
 
   dashboardSummary: (params: { from?: string; to?: string } = {}) => {
     const q = new URLSearchParams();

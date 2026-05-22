@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -549,6 +550,44 @@ def me(
     )
 
 
+class _OrgPatchIn(BaseModel):
+    """Fields the founder can edit on their own organization."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+@router.patch("/org", response_model=AuthMeOut, summary="Edit org details")
+def patch_org(
+    body: _OrgPatchIn,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AuthMeOut:
+    """Edit the caller's organization. Only the founder can do this.
+
+    Today only `name` is editable; plan/slug/gstin are managed elsewhere.
+    Returns the refreshed AuthMeOut so the frontend can update its context."""
+    if current.role != "founder":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="only the founder can edit org details",
+        )
+    org = db.get(Organization, current.org_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="org not found")
+    if body.name is not None:
+        org.name = body.name.strip()
+    db.add(org)
+    db.commit()
+    db.refresh(org)
+    return AuthMeOut(
+        user_id=current.id,
+        org_id=current.org_id,
+        email=current.email,
+        role=current.role,
+        org_name=org.name,
+        org_plan=org.plan,
+    )
+
+
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     body: ChangePasswordIn,
@@ -614,5 +653,171 @@ def change_password(
         meta={"revoked_other_sessions": len(others)},
     )
 
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Active sessions — list + per-session revoke
+# ---------------------------------------------------------------------------
+
+
+class SessionInfoOut(BaseModel):
+    id: uuid.UUID
+    user_agent: Optional[str] = None
+    ip_address: Optional[str] = None
+    created_at: datetime
+    last_used_at: Optional[datetime] = None
+    expires_at: datetime
+    is_current: bool
+
+
+class SessionListOut(BaseModel):
+    sessions: list[SessionInfoOut]
+    total: int
+
+
+@router.get(
+    "/sessions",
+    response_model=SessionListOut,
+    summary="List the caller's active sessions",
+)
+def list_sessions(
+    request: Request,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SessionListOut:
+    """Return every non-revoked, non-expired session for the calling user.
+    The session matching the request's refresh-token cookie is flagged
+    `is_current=True` so the UI can label and protect it."""
+    now = datetime.now(timezone.utc)
+
+    # Identify the current session by hashing the refresh cookie. Falls
+    # back to None for cookieless clients (CLI) — they'll see no rows
+    # tagged as current, which is the safe default.
+    current_hash: Optional[str] = None
+    refresh_plain = request.cookies.get(REFRESH_COOKIE)
+    if refresh_plain:
+        try:
+            current_hash = hash_refresh_token(refresh_plain)
+        except Exception:  # noqa: BLE001
+            current_hash = None
+
+    rows = (
+        db.execute(
+            select(DbSession)
+            .where(
+                DbSession.user_id == current.id,
+                DbSession.revoked_at.is_(None),
+                DbSession.expires_at > now,
+            )
+            .order_by(DbSession.last_used_at.desc().nullslast(), DbSession.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    out = [
+        SessionInfoOut(
+            id=s.id,
+            user_agent=s.user_agent,
+            ip_address=s.ip_address,
+            created_at=s.created_at,
+            last_used_at=s.last_used_at,
+            expires_at=s.expires_at,
+            is_current=(current_hash is not None and s.refresh_token_hash == current_hash),
+        )
+        for s in rows
+    ]
+    return SessionListOut(sessions=out, total=len(out))
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a specific session (sign out a remote device)",
+)
+def revoke_session(
+    session_id: uuid.UUID,
+    request: Request,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Revoke one session by id. Cannot revoke the current session via this
+    endpoint — use POST /logout for that. Cross-user revocation is rejected."""
+    sess = db.get(DbSession, session_id)
+    if sess is None or sess.user_id != current.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+
+    # Block self-revoke via this endpoint to avoid surprising "you just signed
+    # yourself out" behavior from the Settings UI. Use /logout for that.
+    refresh_plain = request.cookies.get(REFRESH_COOKIE)
+    if refresh_plain:
+        try:
+            if sess.refresh_token_hash == hash_refresh_token(refresh_plain):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="cannot revoke the current session — use POST /api/auth/logout instead",
+                )
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+
+    if sess.revoked_at is None:
+        sess.revoked_at = datetime.now(timezone.utc)
+        db.add(sess)
+        audit.record(
+            db,
+            event_type="auth.session_revoke",
+            org_id=current.org_id,
+            user_id=current.id,
+            ip_address=(request.client.host if request.client else None),
+            user_agent=request.headers.get("user-agent"),
+            meta={"target_session_id": str(session_id)},
+        )
+        db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/sessions/revoke-others",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Sign out every device except this one",
+)
+def revoke_other_sessions(
+    request: Request,
+    current: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Bulk-revoke every session for this user except the one carrying the
+    current refresh cookie. Useful for 'sign out everywhere else' after a
+    suspected leak."""
+    now = datetime.now(timezone.utc)
+    current_hash: Optional[str] = None
+    refresh_plain = request.cookies.get(REFRESH_COOKIE)
+    if refresh_plain:
+        try:
+            current_hash = hash_refresh_token(refresh_plain)
+        except Exception:  # noqa: BLE001
+            current_hash = None
+
+    stmt = select(DbSession).where(
+        DbSession.user_id == current.id,
+        DbSession.revoked_at.is_(None),
+    )
+    if current_hash:
+        stmt = stmt.where(DbSession.refresh_token_hash != current_hash)
+    others = db.execute(stmt).scalars().all()
+    for s in others:
+        s.revoked_at = now
+    audit.record(
+        db,
+        event_type="auth.sessions_revoke_others",
+        org_id=current.org_id,
+        user_id=current.id,
+        ip_address=(request.client.host if request.client else None),
+        user_agent=request.headers.get("user-agent"),
+        meta={"revoked_count": len(others)},
+    )
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

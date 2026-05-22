@@ -8,6 +8,7 @@ import {
   LogOut,
   type LucideIcon,
   MessageSquare,
+  Receipt,
   Search,
   Settings,
   Sparkles,
@@ -32,6 +33,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { to: "/search", label: "Search", Icon: Search },
       { to: "/insights", label: "Insights", Icon: Sparkles },
       { to: "/learning", label: "Learning", Icon: Brain },
+      { to: "/tax", label: "Tax", Icon: Receipt },
     ],
   },
   {

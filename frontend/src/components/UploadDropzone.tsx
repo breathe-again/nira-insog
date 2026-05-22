@@ -92,7 +92,7 @@ export default function UploadDropzone({ onUploaded }: Props) {
         type="file"
         multiple
         className="hidden"
-        accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.xlsx,.xls,.html,.htm"
+        accept=".pdf,.png,.jpg,.jpeg,.webp,.csv,.xlsx,.xls,.html,.htm,.xml"
         onChange={(e) => void handleFiles(e.target.files)}
       />
 
@@ -116,7 +116,7 @@ export default function UploadDropzone({ onUploaded }: Props) {
         single file or many at once
       </div>
       <div className="text-xs text-ink-500 mt-1">
-        PDF · image · CSV · Excel · HTML · up to 25 MB each
+        PDF · image · CSV · Excel · HTML · Tally XML · up to 25 MB each
       </div>
 
       {progress && (
