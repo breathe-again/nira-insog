@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import current_org_id
 from common.db import get_db
-from services.qa import QAError, ask, is_enabled as _qa_enabled
+from services.qa import QAError, QAOverloadedError, ask, is_enabled as _qa_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,20 @@ def ask_question(
 
     try:
         result = ask(body.question, org_id=org_id, db=db)
+    except QAOverloadedError:
+        # Anthropic rate-limited / overloaded. Return a 503-shaped soft-fail
+        # so the frontend can show a "try again" hint instead of a red error.
+        return AskOut(
+            question=body.question,
+            sql=None,
+            row_count=0,
+            sample=[],
+            answer=(
+                "Claude is a bit overloaded right now — please try the same "
+                "question again in 20-30 seconds. If this keeps happening, "
+                "Anthropic's status page (status.anthropic.com) will say so."
+            ),
+        )
     except QAError as e:
         # Treat as user-facing 400 — the LLM proposed bad SQL or the question
         # couldn't be answered. The error message is safe to surface.

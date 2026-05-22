@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import uuid
 from typing import Any, Optional
 
@@ -41,9 +42,16 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+# Fallback model — used when the primary is overloaded. Haiku is faster
+# and rarely rate-limited; quality is lower for complex SQL but acceptable.
+FALLBACK_MODEL = os.environ.get("ANTHROPIC_FALLBACK_MODEL", "claude-haiku-4-5-20251001")
 QA_MAX_ROWS = 200          # cap rows we send back to Claude / the frontend
 QA_MAX_TOKENS = 1500
 QA_TIMEOUT_S = 30
+
+# Retry config for transient Anthropic 529/503/429 errors.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_S = (1.0, 3.0, 6.0)   # delay before each retry
 
 
 # Tables Claude is allowed to query. EVERY one of these has an `org_id`
@@ -167,6 +175,73 @@ class QAError(RuntimeError):
     """Raised when we can't safely answer a question."""
 
 
+class QAOverloadedError(QAError):
+    """Raised specifically when Anthropic is rate-limiting / overloaded after
+    all retries. The route maps this to a friendly user-facing 503 message."""
+
+
+def _is_overloaded(exc: Exception) -> bool:
+    """Return True if `exc` looks like a transient Anthropic capacity error.
+
+    Anthropic's SDK raises a typed APIError with status_code; we also fall
+    back to substring sniffing in case the SDK wraps it differently."""
+    status = getattr(exc, "status_code", None)
+    if status in (429, 503, 529):
+        return True
+    msg = str(exc).lower()
+    return any(
+        s in msg
+        for s in ("overloaded", "rate limit", "rate_limit", "too many requests", "529", "503", "service unavailable")
+    )
+
+
+def _call_with_retry(client, *, model: str, messages: list, system: str, max_tokens: int):
+    """Wrap client.messages.create with retry on overload errors. After
+    RETRY_ATTEMPTS exhausted on the primary model, tries the fallback model
+    once. Raises QAOverloadedError if everything fails with overload."""
+    last_exc: Optional[Exception] = None
+    # Primary model: retry with backoff.
+    for attempt, backoff in enumerate(RETRY_BACKOFF_S, start=1):
+        try:
+            return client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            if not _is_overloaded(e):
+                # Hard error (auth, malformed request, etc.) — don't retry.
+                raise
+            logger.warning(
+                "Anthropic overloaded (attempt %d/%d on %s): %s — backing off %.1fs",
+                attempt, RETRY_ATTEMPTS, model, e, backoff,
+            )
+            if attempt < RETRY_ATTEMPTS:
+                time.sleep(backoff)
+
+    # Last-ditch attempt on the fallback model (smaller / less contended).
+    if FALLBACK_MODEL and FALLBACK_MODEL != model:
+        logger.warning(
+            "Primary model %s overloaded — trying fallback %s",
+            model, FALLBACK_MODEL,
+        )
+        try:
+            return client.messages.create(
+                model=FALLBACK_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+
+    raise QAOverloadedError(
+        "Claude is overloaded right now — please try again in 30 seconds."
+    ) from last_exc
+
+
 def validate_sql(sql: str) -> str:
     """Apply the safety allowlist + return the cleaned SQL.
 
@@ -243,12 +318,15 @@ def ask(question: str, *, org_id: uuid.UUID, db: Session) -> dict:
 
     # --- Step 1: ask Claude for SQL ---
     try:
-        sql_resp = client.messages.create(
+        sql_resp = _call_with_retry(
+            client,
             model=DEFAULT_MODEL,
-            max_tokens=QA_MAX_TOKENS,
-            system=SCHEMA_PROMPT,
             messages=[{"role": "user", "content": question}],
+            system=SCHEMA_PROMPT,
+            max_tokens=QA_MAX_TOKENS,
         )
+    except QAOverloadedError:
+        raise
     except Exception as e:  # noqa: BLE001
         raise QAError(f"LLM call (SQL synthesis) failed: {e}") from e
 
@@ -266,10 +344,9 @@ def ask(question: str, *, org_id: uuid.UUID, db: Session) -> dict:
 
     # --- Step 3: ask Claude to summarize ---
     try:
-        ans_resp = client.messages.create(
+        ans_resp = _call_with_retry(
+            client,
             model=DEFAULT_MODEL,
-            max_tokens=600,
-            system=ANSWER_PROMPT,
             messages=[
                 {
                     "role": "user",
@@ -281,7 +358,25 @@ def ask(question: str, *, org_id: uuid.UUID, db: Session) -> dict:
                     ),
                 }
             ],
+            system=ANSWER_PROMPT,
+            max_tokens=600,
         )
+    except QAOverloadedError as e:
+        # SQL ran fine — just couldn't summarize. Return the rows with a
+        # friendly note instead of failing the whole request.
+        logger.warning("Summary LLM overloaded — returning raw rows: %s", e)
+        return {
+            "question": question,
+            "sql": sql,
+            "row_count": len(rows),
+            "sample": _jsonable_rows(sample),
+            "answer": (
+                f"Found {len(rows)} matching row{'s' if len(rows) != 1 else ''}. "
+                f"Claude is overloaded so I can't summarize this in plain English "
+                f"right now — try again in 30 seconds, or click ‘Show data’ below "
+                f"to see the result directly."
+            ),
+        }
     except Exception as e:  # noqa: BLE001
         raise QAError(f"LLM call (answer) failed: {e}") from e
 
