@@ -167,20 +167,11 @@ def list_documents(
     )
 
 
-@router.get(
-    "/{document_id}",
-    response_model=DocumentDetailOut,
-    summary="Get one document (with extraction)",
-)
-def get_document(
-    document_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    org_id: uuid.UUID = Depends(current_org_id),
-) -> DocumentDetailOut:
-    doc = db.get(Document, document_id)
-    if doc is None or doc.org_id != org_id:
-        raise HTTPException(status_code=404, detail="document not found")
-    return DocumentDetailOut.model_validate(doc)
+# NOTE: The parameterized `GET /{document_id}` route is defined at the
+# BOTTOM of this file so FastAPI's path-matching tries the literal-path
+# routes below (/duplicates, /backfill-hashes) first. Otherwise FastAPI
+# greedily matches /duplicates against /{document_id} and 422s on UUID
+# parsing.
 
 
 # ---------------------------------------------------------------------------
@@ -555,3 +546,26 @@ def backfill_hashes(
     return BackfillHashesOut(
         processed=processed, updated=updated, skipped=skipped, errors=errors
     )
+
+
+# ---------------------------------------------------------------------------
+# Parameterized route — REGISTERED LAST so the literal paths above
+# (/duplicates, /backfill-hashes, /{id}/delete-as-duplicate) take precedence
+# in FastAPI's matcher.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{document_id}",
+    response_model=DocumentDetailOut,
+    summary="Get one document (with extraction)",
+)
+def get_document(
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    org_id: uuid.UUID = Depends(current_org_id),
+) -> DocumentDetailOut:
+    doc = db.get(Document, document_id)
+    if doc is None or doc.org_id != org_id:
+        raise HTTPException(status_code=404, detail="document not found")
+    return DocumentDetailOut.model_validate(doc)
