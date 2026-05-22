@@ -12,20 +12,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
-  CalendarClock,
   CheckCircle2,
-  ChevronRight,
   Download,
-  FileText,
   Info,
   Loader2,
   ShieldCheck,
-  Sparkles,
   XCircle,
 } from "lucide-react";
 import TopBar from "../components/TopBar";
 import SectionCard from "../components/SectionCard";
-import StatCard from "../components/StatCard";
 import EmptyState from "../components/EmptyState";
 import { api } from "../api";
 import type {

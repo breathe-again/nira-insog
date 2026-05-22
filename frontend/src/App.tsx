@@ -15,6 +15,7 @@ import Health from "./pages/Health";
 import Settings from "./pages/Settings";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
           {/* Public auth routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/accept-invite/:token" element={<AcceptInvite />} />
 
           {/* Everything else requires auth */}
           <Route element={<ProtectedRoute />}>

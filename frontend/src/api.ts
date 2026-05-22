@@ -25,11 +25,15 @@ import type {
   DuplicateClustersOut,
   GSTINHealthOut,
   InsightListOut,
+  InviteCheckOut,
+  InviteOut,
   InvestmentActivityOut,
   LearningStatusOut,
   RetrainOut,
   SearchOut,
+  SessionListOut,
   TDSDraftOut,
+  TeamOverviewOut,
   TokensOut,
 } from "./types";
 
@@ -231,6 +235,39 @@ export const api = {
     ),
 
   tdsDraft: () => request<TDSDraftOut>("/api/tax/tds-draft"),
+
+  // ---------- Org edit ----------
+  patchOrg: (body: { name?: string }) =>
+    request<AuthMeOut>("/api/auth/org", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  // ---------- Sessions ----------
+  listSessions: () => request<SessionListOut>("/api/auth/sessions"),
+  revokeSession: (id: string) =>
+    request<void>(`/api/auth/sessions/${id}`, { method: "DELETE" }),
+  revokeOtherSessions: () =>
+    request<void>("/api/auth/sessions/revoke-others", { method: "POST" }),
+
+  // ---------- Team ----------
+  teamOverview: () => request<TeamOverviewOut>("/api/team"),
+  createInvite: (body: { email: string; role?: "member" | "accountant" }) =>
+    request<InviteOut>("/api/team/invites", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeInvite: (id: string) =>
+    request<void>(`/api/team/invites/${id}`, { method: "DELETE" }),
+
+  // Public — no auth required (called from /accept-invite page).
+  checkInvite: (token: string) =>
+    request<InviteCheckOut>(`/api/team/invites/by-token/${token}`),
+  acceptInvite: (token: string, password: string) =>
+    request<{ ok: boolean; email: string; message: string }>(
+      `/api/team/invites/${token}/accept`,
+      { method: "POST", body: JSON.stringify({ password }) },
+    ),
 
   dashboardSummary: (params: { from?: string; to?: string } = {}) => {
     const q = new URLSearchParams();
