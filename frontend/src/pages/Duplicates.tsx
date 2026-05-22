@@ -17,7 +17,6 @@ import type {
   BackfillHashesOut,
   DuplicateClusterOut,
   DuplicateClustersOut,
-  DuplicateDocOut,
 } from "../types";
 import { formatINRShort } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -176,7 +175,7 @@ export default function Duplicates() {
               <EmptyState
                 Icon={CheckCircle2}
                 title="No duplicates found"
-                hint="Your inbox is clean — every uploaded document looks distinct. Re-scan after uploading more to catch anything new."
+                description="Your inbox is clean — every uploaded document looks distinct. Re-scan after uploading more to catch anything new."
               />
             ) : (
               <div className="space-y-4">
