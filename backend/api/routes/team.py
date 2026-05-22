@@ -25,11 +25,11 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api import audit
 from api.deps import CurrentUser, get_current_user
 from api.security import PasswordPolicyError, hash_password, validate_password_policy
 from common.db import get_db
 from common.models import Invite, Organization, User
+from services import audit
 
 logger = logging.getLogger(__name__)
 
