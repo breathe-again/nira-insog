@@ -232,8 +232,20 @@ function SearchRow({ hit }: { hit: SearchHitOut }) {
           : "bg-ink-100 text-ink-600"
     : "bg-ink-100 text-ink-600";
 
-  return (
-    <li className="px-4 py-3 flex items-center gap-3 hover:bg-ink-50">
+  // Per-source styling: bank txns keep their existing dot-tone, invoices get
+  // a violet "Invoice" badge, receipts an amber "Receipt" badge.
+  const sourceBadge =
+    hit.source === "invoice"
+      ? { label: "Invoice", tone: "bg-violet-100 text-violet-700" }
+      : hit.source === "receipt"
+        ? { label: "Receipt", tone: "bg-amber-100 text-amber-700" }
+        : null;
+
+  // Make invoice/receipt rows clickable — open their document.
+  const linkTo = hit.document_id ? `/inbox/${hit.document_id}` : null;
+
+  const inner = (
+    <>
       <div
         className={cn(
           "h-2 w-2 rounded-full shrink-0",
@@ -241,9 +253,24 @@ function SearchRow({ hit }: { hit: SearchHitOut }) {
         )}
       />
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-ink-900 truncate">{hit.description}</div>
+        <div className="text-sm text-ink-900 truncate flex items-center gap-2">
+          {sourceBadge && (
+            <span
+              className={cn(
+                "text-[10px] uppercase tracking-wider rounded px-1.5 py-0.5 shrink-0",
+                sourceBadge.tone,
+              )}
+            >
+              {sourceBadge.label}
+            </span>
+          )}
+          <span className="truncate">{hit.description}</span>
+        </div>
         <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-2">
           <span>{hit.txn_date ?? "—"}</span>
+          {hit.vendor_name && hit.source !== "bank_txn" && (
+            <span className="text-ink-700">{hit.vendor_name}</span>
+          )}
           {hit.category && (
             <span className="px-1.5 py-0.5 rounded bg-ink-100 text-ink-600">
               {hit.category}
@@ -272,7 +299,23 @@ function SearchRow({ hit }: { hit: SearchHitOut }) {
           </div>
         )}
       </div>
-    </li>
+    </>
+  );
+
+  if (linkTo) {
+    return (
+      <li>
+        <a
+          href={linkTo}
+          className="px-4 py-3 flex items-center gap-3 hover:bg-ink-50 cursor-pointer"
+        >
+          {inner}
+        </a>
+      </li>
+    );
+  }
+  return (
+    <li className="px-4 py-3 flex items-center gap-3 hover:bg-ink-50">{inner}</li>
   );
 }
 

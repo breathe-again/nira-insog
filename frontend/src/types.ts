@@ -278,6 +278,7 @@ export interface RetrainOut {
 
 export interface SearchHitOut {
   id: string;
+  source: "bank_txn" | "invoice" | "receipt";
   txn_date: string | null;
   amount: string | null;
   direction: string | null;
@@ -285,6 +286,9 @@ export interface SearchHitOut {
   matched_vendor_id: string | null;
   category: string | null;
   distance: number | null;
+  document_id: string | null;
+  vendor_name: string | null;
+  invoice_number: string | null;
 }
 
 export interface SearchOut {
