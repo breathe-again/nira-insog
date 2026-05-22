@@ -20,6 +20,7 @@ import type {
   DocumentListOut,
   DocumentOut,
   InsightListOut,
+  InvestmentActivityOut,
   LearningStatusOut,
   RetrainOut,
   SearchOut,
@@ -178,6 +179,16 @@ export const api = {
     if (params.limit) q.set("limit", String(params.limit));
     return request<CategoryDetailOut>(
       `/api/dashboard/category-detail?${q.toString()}`,
+    );
+  },
+
+  investmentActivity: (params: { from?: string; to?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.from) q.set("from_date", params.from);
+    if (params.to) q.set("to_date", params.to);
+    const qs = q.toString();
+    return request<InvestmentActivityOut>(
+      `/api/dashboard/investment-activity${qs ? `?${qs}` : ""}`,
     );
   },
 

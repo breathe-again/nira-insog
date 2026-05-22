@@ -21,6 +21,7 @@ import ExpenseDonut from "../components/charts/ExpenseDonut";
 import ForecastChart from "../components/charts/ForecastChart";
 import RecurringOutflows from "../components/RecurringOutflows";
 import CategoryDetailPanel from "../components/CategoryDetailPanel";
+import InvestmentActivityCard from "../components/InvestmentActivityCard";
 import DateRangePicker, {
   type DateRange,
   presetToRange,
@@ -614,6 +615,16 @@ export default function Dashboard() {
         >
           <RecurringOutflows rows={vm.recurringOutflows} />
         </SectionCard>
+
+        {/* Investment activity — only on live data (demo doesn't have MF flows
+            and the widget self-hides when invested + redeemed are both zero). */}
+        {!demoMode && vm.hasAnyData && (
+          <InvestmentActivityCard
+            from={dateRange.from}
+            to={dateRange.to}
+            rangeLabel={rangeLabel}
+          />
+        )}
 
         {/* Top clients + Compliance */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">

@@ -127,6 +127,91 @@ def _color_for_dynamic(category_name: str) -> str:
     return _DYNAMIC_PALETTE[idx]
 
 
+# ---------------------------------------------------------------------------
+# Mutual-fund triplet dedupe
+#
+# Bank/MF statements for a single fund buy often emit THREE rows:
+#   • "Gross Purchase - <Scheme> - <ISIN>"  ← gross outflow
+#   • "Stamp Duty   - <Scheme> - <ISIN>"   ← govt stamp on the buy
+#   • "Net Purchase - <Scheme> - <ISIN>"   ← what actually hit the bank
+# Only Net Purchase reflects the real cash movement; summing all three
+# triple-counts the spend (₹100 Cr looks like ₹200 Cr+ on the dashboard).
+# We dedupe at query time so the underlying rows remain auditable but the
+# totals reflect reality. Convention: prefer Net, then Gross, then Stamp.
+# ---------------------------------------------------------------------------
+
+_ISIN_RE = re.compile(r"\bINF[0-9A-Z]{9}\b", re.IGNORECASE)
+
+
+def _extract_isin(desc: str) -> Optional[str]:
+    """Return the 12-char ISIN (INF + 9 alphanumerics) if present in desc."""
+    m = _ISIN_RE.search(desc or "")
+    return m.group(0).upper() if m else None
+
+
+def _mf_row_role(desc: str) -> Optional[str]:
+    """Identify which leg of an MF triplet a row represents.
+    Returns 'net' | 'gross' | 'stamp' | None."""
+    s = (desc or "").lower()
+    if "net purchase" in s:
+        return "net"
+    if "gross purchase" in s:
+        return "gross"
+    if "stamp duty" in s and ("fund" in s or "scheme" in s or _ISIN_RE.search(s or "")):
+        return "stamp"
+    return None
+
+
+def _dedupe_mf_breakdown(
+    rows: list,
+    *,
+    date_idx: int = 0,
+    desc_idx: int = 1,
+) -> list:
+    """Drop redundant Gross + Stamp Duty rows when a Net Purchase exists for
+    the same (txn_date, ISIN). Each input row is a tuple (or row-proxy) where
+    ``rows[i][date_idx]`` is the txn date and ``rows[i][desc_idx]`` is the
+    description. Other columns pass through unchanged.
+
+    Returns a new list containing only the surviving rows. Order is preserved.
+    """
+    if not rows:
+        return list(rows)
+
+    # Group row indices by (date, isin), but only for rows that look like
+    # part of an MF triplet (have both an ISIN and a recognized role).
+    groups: dict[tuple, list[int]] = defaultdict(list)
+    roles_per_row: dict[int, str] = {}
+    for i, row in enumerate(rows):
+        try:
+            dt = row[date_idx]
+            desc = row[desc_idx]
+        except (IndexError, TypeError):
+            continue
+        isin = _extract_isin(desc or "")
+        role = _mf_row_role(desc or "")
+        if isin and role:
+            groups[(dt, isin)].append(i)
+            roles_per_row[i] = role
+
+    drop: set[int] = set()
+    for idxs in groups.values():
+        if len(idxs) < 2:
+            continue
+        role_to_idx = {roles_per_row[i]: i for i in idxs}
+        if "net" in role_to_idx:
+            keep = role_to_idx["net"]
+        elif "gross" in role_to_idx:
+            keep = role_to_idx["gross"]
+        else:
+            continue
+        for i in idxs:
+            if i != keep:
+                drop.add(i)
+
+    return [r for i, r in enumerate(rows) if i not in drop]
+
+
 def _categorize(
     description: str,
     vendor_name: Optional[str],
@@ -421,23 +506,26 @@ def dashboard_summary(
     }
 
     # ------------ Cash flow chart (last 30 days) ------------
-    daily_rows = db.execute(
+    # Pull raw txns (not aggregated) so we can dedupe MF triplets before
+    # summing — otherwise the daily debits get triple-counted on fund-buy days.
+    raw_rows = db.execute(
         select(
             BankTransaction.txn_date,
+            BankTransaction.description,
             BankTransaction.direction,
-            func.sum(BankTransaction.amount).label("amt"),
+            BankTransaction.amount,
         )
         .where(
             BankTransaction.org_id == org_id,
             BankTransaction.txn_date >= window_start,
             BankTransaction.txn_date <= window_end,
         )
-        .group_by(BankTransaction.txn_date, BankTransaction.direction)
     ).all()
+    raw_rows = _dedupe_mf_breakdown(raw_rows, date_idx=0, desc_idx=1)
     by_day: dict[date, dict[str, Decimal]] = defaultdict(
         lambda: {"in": Decimal("0"), "out": Decimal("0")}
     )
-    for d, direction, amt in daily_rows:
+    for d, _desc, direction, amt in raw_rows:
         key = "in" if direction == "credit" else "out"
         by_day[d][key] += Decimal(amt or 0)
 
@@ -478,6 +566,9 @@ def dashboard_summary(
             BankTransaction.txn_date <= window_end,
         )
     ).all()
+    # Dedupe MF triplets so a single ₹100 Cr buy doesn't appear as ₹300 Cr
+    # spread across the stacked area.
+    cat_rows = _dedupe_mf_breakdown(cat_rows, date_idx=0, desc_idx=1)
 
     # day -> {category_name: amount}
     by_day_cat: dict[date, dict[str, Decimal]] = defaultdict(
@@ -548,6 +639,7 @@ def dashboard_summary(
 
     bank_rows = db.execute(
         select(
+            BankTransaction.txn_date,
             BankTransaction.description,
             BankTransaction.amount,
             Vendor.name,
@@ -561,7 +653,8 @@ def dashboard_summary(
             BankTransaction.txn_date <= window_end,
         )
     ).all()
-    for desc_text, amt, vname, vcat in bank_rows:
+    bank_rows = _dedupe_mf_breakdown(bank_rows, date_idx=0, desc_idx=1)
+    for _d, desc_text, amt, vname, vcat in bank_rows:
         cat = _categorize(desc_text, vname, vcat)
         cat_totals[cat] += Decimal(amt or 0)
 
@@ -955,6 +1048,7 @@ def category_detail(
     # Source 1 — bank-transaction debits
     bank_rows = db.execute(
         select(
+            BankTransaction.txn_date,
             BankTransaction.description,
             BankTransaction.amount,
             Vendor.name,
@@ -968,7 +1062,8 @@ def category_detail(
             BankTransaction.txn_date <= window_end,
         )
     ).all()
-    for desc_text, amt, vname, vcat in bank_rows:
+    bank_rows = _dedupe_mf_breakdown(bank_rows, date_idx=0, desc_idx=1)
+    for _d, desc_text, amt, vname, vcat in bank_rows:
         cat_name, cat_color = _categorize(desc_text, vname, vcat)
         if cat_name != target:
             continue
@@ -1061,3 +1156,186 @@ def _short_desc(s: Optional[str]) -> str:
         if p and any(c.isalpha() for c in p):
             return p[:40]
     return s[:40]
+
+
+# ---------------------------------------------------------------------------
+# Investment activity widget
+# ---------------------------------------------------------------------------
+
+
+_AMC_HINTS = [
+    "parag parikh", "ppfas",
+    "hdfc", "axis", "sbi", "icici", "nippon", "kotak", "mirae",
+    "quant", "uti", "tata", "edelweiss", "dsp", "aditya birla", "motilal oswal",
+]
+
+
+def _scheme_label(desc: str, vendor_name: Optional[str]) -> str:
+    """Best-effort scheme label for an investment txn. Prefers an AMC + scheme
+    snippet from the description, falls back to vendor name, then a short desc.
+
+    Examples:
+      "Net Purchase - Parag Parikh Flexi Cap Fund - INF879O01019 - NAV ..."
+        → "Parag Parikh Flexi Cap Fund"
+      "RTGS/.../NSEClearingNewMutualFund/UN..." → "NSE Clearing"
+    """
+    s = (desc or "").strip()
+    low = s.lower()
+
+    # Try to find an AMC name and grab the run of words that follow.
+    for amc in _AMC_HINTS:
+        i = low.find(amc)
+        if i == -1:
+            continue
+        # Take ~60 chars from the AMC onward, trim at hyphen/pipe/comma so we
+        # don't drag in NAV / Units / ISIN tails.
+        chunk = s[i : i + 80]
+        for sep in [" - ", "-", "|", ","]:
+            cut = chunk.find(sep)
+            if cut > 0:
+                chunk = chunk[:cut]
+                break
+        chunk = chunk.strip()
+        if chunk:
+            # Title-case nicely (preserve all-caps acronyms like SBI, UTI).
+            words = []
+            for w in chunk.split():
+                words.append(w if w.isupper() and len(w) <= 4 else w.capitalize())
+            return " ".join(words)
+
+    if "nseclearing" in low or "nse clearing" in low:
+        return "NSE Clearing"
+    if "bseclearing" in low or "bse clearing" in low:
+        return "BSE Clearing"
+
+    if vendor_name:
+        return vendor_name
+
+    # Strip "Net Purchase / Gross Purchase / Stamp Duty -" prefix if present.
+    for prefix in ("net purchase", "gross purchase", "stamp duty"):
+        if low.startswith(prefix):
+            return s[len(prefix):].lstrip(" -:")[:60] or s[:60]
+    return s[:60]
+
+
+class InvestmentSchemeOut(BaseModel):
+    scheme: str
+    invested: Decimal
+    redeemed: Decimal
+    net: Decimal
+    txn_count: int
+
+
+class InvestmentActivityOut(BaseModel):
+    window_start: date
+    window_end: date
+    invested_total: Decimal
+    redeemed_total: Decimal
+    net_invested: Decimal
+    txn_count_in: int   # debits (money into investments)
+    txn_count_out: int  # credits (redemptions out of investments)
+    by_scheme: list[InvestmentSchemeOut]
+
+
+@router.get(
+    "/investment-activity",
+    response_model=InvestmentActivityOut,
+    summary="Net invested vs redeemed for the selected window",
+)
+def investment_activity(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+    org_id: uuid.UUID = Depends(current_org_id),
+) -> InvestmentActivityOut:
+    """Money flowing INTO investments (debits classified as Investments) vs
+    money flowing OUT (credits — redemptions, SWP, dividend reinvestments
+    going back to bank). Net = invested − redeemed.
+
+    Dedupes MF triplets (Gross/Stamp/Net) before summing so the headline
+    figures reflect real cash movement, not statement breakdown rows."""
+    real_today = _today_utc()
+    latest_txn_date = db.scalar(
+        select(func.max(BankTransaction.txn_date)).where(BankTransaction.org_id == org_id)
+    )
+    if latest_txn_date is not None and (real_today - latest_txn_date).days > 30:
+        today = latest_txn_date
+    else:
+        today = real_today
+    if from_date and to_date:
+        window_start, window_end = (
+            (from_date, to_date) if from_date <= to_date else (to_date, from_date)
+        )
+    else:
+        window_start = today - timedelta(days=30)
+        window_end = today
+
+    rows = db.execute(
+        select(
+            BankTransaction.txn_date,
+            BankTransaction.description,
+            BankTransaction.direction,
+            BankTransaction.amount,
+            Vendor.name,
+            Vendor.default_expense_category,
+        )
+        .outerjoin(Vendor, Vendor.id == BankTransaction.matched_vendor_id)
+        .where(
+            BankTransaction.org_id == org_id,
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
+        )
+    ).all()
+    rows = _dedupe_mf_breakdown(rows, date_idx=0, desc_idx=1)
+
+    invested = Decimal("0")
+    redeemed = Decimal("0")
+    cnt_in = 0
+    cnt_out = 0
+    # scheme → {invested, redeemed, count}
+    by_scheme: dict[str, dict[str, Decimal | int]] = defaultdict(
+        lambda: {"invested": Decimal("0"), "redeemed": Decimal("0"), "txn_count": 0}
+    )
+
+    for _d, desc, direction, amt, vname, vcat in rows:
+        cat, _color = _categorize(desc, vname, vcat)
+        if cat != "Investments":
+            continue
+        amt_dec = Decimal(amt or 0)
+        scheme = _scheme_label(desc or "", vname)
+        bucket = by_scheme[scheme]
+        bucket["txn_count"] += 1  # type: ignore[operator]
+        if direction == "debit":
+            invested += amt_dec
+            cnt_in += 1
+            bucket["invested"] += amt_dec  # type: ignore[operator]
+        else:
+            redeemed += amt_dec
+            cnt_out += 1
+            bucket["redeemed"] += amt_dec  # type: ignore[operator]
+
+    scheme_list = sorted(
+        (
+            InvestmentSchemeOut(
+                scheme=name,
+                invested=b["invested"],  # type: ignore[arg-type]
+                redeemed=b["redeemed"],  # type: ignore[arg-type]
+                net=b["invested"] - b["redeemed"],  # type: ignore[operator]
+                txn_count=b["txn_count"],  # type: ignore[arg-type]
+            )
+            for name, b in by_scheme.items()
+        ),
+        key=lambda s: (s.invested + s.redeemed),
+        reverse=True,
+    )[:12]
+
+    return InvestmentActivityOut(
+        window_start=window_start,
+        window_end=window_end,
+        invested_total=invested,
+        redeemed_total=redeemed,
+        net_invested=invested - redeemed,
+        txn_count_in=cnt_in,
+        txn_count_out=cnt_out,
+        by_scheme=scheme_list,
+    )

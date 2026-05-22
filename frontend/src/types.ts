@@ -165,6 +165,25 @@ export interface CategoryDetailOut {
   contributors: CategoryDetailRowOut[];
 }
 
+export interface InvestmentSchemeOut {
+  scheme: string;
+  invested: string | number;
+  redeemed: string | number;
+  net: string | number;
+  txn_count: number;
+}
+
+export interface InvestmentActivityOut {
+  window_start: string;
+  window_end: string;
+  invested_total: string | number;
+  redeemed_total: string | number;
+  net_invested: string | number;
+  txn_count_in: number;
+  txn_count_out: number;
+  by_scheme: InvestmentSchemeOut[];
+}
+
 // ---------- Learning ----------
 
 export interface PatternRowOut {
