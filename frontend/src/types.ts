@@ -184,6 +184,50 @@ export interface InvestmentActivityOut {
   by_scheme: InvestmentSchemeOut[];
 }
 
+// ---------- Duplicates ----------
+
+export interface DuplicateDocOut {
+  id: string;
+  original_filename: string;
+  document_type: string;
+  status: string;
+  file_size_bytes: number;
+  txn_count: number;
+  total_debit: string | number;
+  total_credit: string | number;
+  min_date: string | null;
+  max_date: string | null;
+  uploaded_at: string;
+  has_hash: boolean;
+}
+
+export interface DuplicateClusterOut {
+  cluster_id: string;
+  cluster_type: "exact" | "fuzzy";
+  signature: string;
+  docs: DuplicateDocOut[];
+}
+
+export interface DuplicateClustersOut {
+  clusters: DuplicateClusterOut[];
+  total_clusters: number;
+  total_duplicate_docs: number;
+}
+
+export interface DeleteDuplicateOut {
+  document_id: string;
+  txns_deleted: number;
+  invoices_unlinked: number;
+  receipts_unlinked: number;
+}
+
+export interface BackfillHashesOut {
+  processed: number;
+  updated: number;
+  skipped: number;
+  errors: number;
+}
+
 // ---------- Learning ----------
 
 export interface PatternRowOut {

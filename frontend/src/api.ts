@@ -14,11 +14,14 @@ import type {
   AskOut,
   AuthMeOut,
   BackfillEmbeddingsOut,
+  BackfillHashesOut,
   CategoryDetailOut,
   DashboardSummaryOut,
+  DeleteDuplicateOut,
   DocumentDetailOut,
   DocumentListOut,
   DocumentOut,
+  DuplicateClustersOut,
   InsightListOut,
   InvestmentActivityOut,
   LearningStatusOut,
@@ -34,6 +37,25 @@ export class NotAuthenticatedError extends Error {
   constructor(msg = "not authenticated") {
     super(msg);
     this.name = "NotAuthenticatedError";
+  }
+}
+
+/** Thrown by uploadDocument() when the backend rejects a 409 duplicate. */
+export class DuplicateUploadError extends Error {
+  existingDocumentId?: string;
+  existingFilename?: string;
+  uploadedAt?: string;
+  constructor(
+    msg: string,
+    existingDocumentId?: string,
+    existingFilename?: string,
+    uploadedAt?: string,
+  ) {
+    super(msg);
+    this.name = "DuplicateUploadError";
+    this.existingDocumentId = existingDocumentId;
+    this.existingFilename = existingFilename;
+    this.uploadedAt = uploadedAt;
   }
 }
 
@@ -141,6 +163,28 @@ export const api = {
       if (ok) res = await doFetch();
     }
     if (res.status === 401) throw new NotAuthenticatedError();
+    if (res.status === 409) {
+      // Duplicate detected — surface a structured error so the UI can link
+      // to the existing document instead of showing a red banner.
+      let detail: {
+        message?: string;
+        existing_document_id?: string;
+        existing_filename?: string;
+        uploaded_at?: string;
+      } = {};
+      try {
+        const body = (await res.json()) as { detail?: typeof detail };
+        detail = body.detail ?? {};
+      } catch {
+        // ignore
+      }
+      throw new DuplicateUploadError(
+        detail.message ?? "This file has already been uploaded.",
+        detail.existing_document_id,
+        detail.existing_filename,
+        detail.uploaded_at,
+      );
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`Upload failed (${res.status}): ${text || res.statusText}`);
@@ -158,6 +202,20 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  listDuplicates: () =>
+    request<DuplicateClustersOut>("/api/documents/duplicates"),
+
+  deleteAsDuplicate: (id: string) =>
+    request<DeleteDuplicateOut>(`/api/documents/${id}/delete-as-duplicate`, {
+      method: "POST",
+    }),
+
+  backfillHashes: (limit = 500) =>
+    request<BackfillHashesOut>(
+      `/api/documents/backfill-hashes?limit=${limit}`,
+      { method: "POST" },
+    ),
 
   dashboardSummary: (params: { from?: string; to?: string } = {}) => {
     const q = new URLSearchParams();

@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   Activity,
   Brain,
+  Copy,
   Inbox,
   LayoutDashboard,
   LogOut,
@@ -36,6 +37,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: "Admin",
     items: [
+      { to: "/duplicates", label: "Duplicates", Icon: Copy },
       { to: "/system", label: "System", Icon: Activity },
       { to: "/settings", label: "Settings", Icon: Settings },
     ],

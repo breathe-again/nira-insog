@@ -9,6 +9,7 @@ import Ask from "./pages/Ask";
 import Insights from "./pages/Insights";
 import Learning from "./pages/Learning";
 import Search from "./pages/Search";
+import Duplicates from "./pages/Duplicates";
 import Health from "./pages/Health";
 import Settings from "./pages/Settings";
 import Login from "./pages/Login";
@@ -35,6 +36,7 @@ export default function App() {
               <Route path="insights" element={<Insights />} />
               <Route path="learning" element={<Learning />} />
               <Route path="search" element={<Search />} />
+              <Route path="duplicates" element={<Duplicates />} />
               <Route path="system" element={<Health />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />

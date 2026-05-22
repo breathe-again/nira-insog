@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { CheckCircle2, CloudUpload, Loader2 } from "lucide-react";
-import { api } from "../api";
+import { api, DuplicateUploadError } from "../api";
 import type { DocumentOut } from "../types";
 import { cn } from "../lib/cn";
 
@@ -26,25 +26,41 @@ export default function UploadDropzone({ onUploaded }: Props) {
       // upload. One unsupported file shouldn't stop the rest from making it
       // into the queue.
       const failures: string[] = [];
+      const duplicates: string[] = [];
       let done = 0;
       for (const file of Array.from(files)) {
         try {
           const doc = await api.uploadDocument(file);
           onUploaded?.(doc);
         } catch (e) {
-          failures.push(
-            `${file.name}: ${e instanceof Error ? e.message : String(e)}`,
-          );
+          if (e instanceof DuplicateUploadError) {
+            // Duplicate is not a failure — just inform the user. The existing
+            // doc is already in the inbox; we don't need to re-process it.
+            duplicates.push(
+              `${file.name} was already uploaded${
+                e.uploadedAt
+                  ? ` (on ${new Date(e.uploadedAt).toLocaleDateString()})`
+                  : ""
+              } — skipped.`,
+            );
+          } else {
+            failures.push(
+              `${file.name}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
         }
         done++;
         setProgress({ done, total });
       }
       setBusy(false);
-      if (failures.length > 0) {
+      // Combine duplicate-skipped messages with hard failures into the same
+      // status area, but with a softer tone for duplicates (info, not error).
+      const messages: string[] = [...duplicates, ...failures];
+      if (messages.length > 0) {
         setError(
-          failures.length === 1
-            ? failures[0]
-            : `${failures.length} of ${total} failed:\n` + failures.join("\n"),
+          messages.length === 1
+            ? messages[0]
+            : `${messages.length} of ${total} skipped:\n` + messages.join("\n"),
         );
       }
       setTimeout(() => setProgress(null), 2500);

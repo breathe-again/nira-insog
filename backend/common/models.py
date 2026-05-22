@@ -290,6 +290,15 @@ class Document(Base):
     # NULL means the file is stored in plaintext (legacy uploads pre-Phase A).
     encryption_meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # SHA-256 of the raw uploaded bytes. Lets us reject re-uploads of the same
+    # physical file with HTTP 409. Nullable so legacy rows from before this
+    # column existed remain valid; new uploads always populate it.
+    content_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Soft-delete timestamp. Set when the duplicate-review queue marks a doc
+    # as a redundant copy. Dashboard queries filter out non-null deleted_at.
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = _ts_now()
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
