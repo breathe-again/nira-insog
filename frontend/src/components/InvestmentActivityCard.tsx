@@ -95,9 +95,9 @@ export default function InvestmentActivityCard({ from, to, rangeLabel }: Props) 
           icon={<TrendingUp className="h-4 w-4" />}
         />
         <HeadlineTile
-          label="Net invested"
+          label={net >= 0 ? "Net invested" : "Net redeemed"}
           value={formatINRShort(Math.abs(net))}
-          hint={net >= 0 ? "money in" : "money out"}
+          hint={net >= 0 ? "into investments" : "back to bank"}
           tone={net >= 0 ? "net-in" : "net-out"}
         />
       </div>

@@ -299,7 +299,46 @@ def extract_vendor_hint(description: str) -> Optional[str]:
     if hint.upper() in {"INF", "INFT", "TRF", "TRFR"}:
         return None
 
+    # Skip mutual-fund statement row TYPES that get picked up as "vendor" when
+    # they appear at the start of the description.
+    if hint.lower() in (
+        "net purchase",
+        "gross purchase",
+        "stamp duty",
+        "less stamp duty",
+        "redemption",
+        "purchase",
+    ):
+        return None
+
+    # Skip RTGS / NEFT reference numbers masquerading as vendor names. These
+    # look like 3-5 letter bank code followed by 11-15 digits and nothing else
+    # (e.g. ICICR42025041100526629, HDFCR52025041761650463). Real vendor names
+    # contain at least one space OR have a letters-to-digits ratio that's
+    # mostly letters.
+    if _looks_like_bank_ref(hint):
+        return None
+
     return hint
+
+
+_BANK_REF_RE = re.compile(r"^[A-Za-z]{2,5}\d{8,}\b", re.IGNORECASE)
+
+
+def _looks_like_bank_ref(hint: str) -> bool:
+    """True if `hint` looks like a bank RTGS/NEFT reference number rather than
+    a vendor name. We accept anything that's `<3-5 letters><8+ digits>` and
+    has no whitespace (real vendor names usually have at least one space)."""
+    if " " in hint.strip():
+        return False
+    if _BANK_REF_RE.match(hint):
+        return True
+    # Also reject pure-digit hints or very digit-heavy short tokens.
+    letters = sum(c.isalpha() for c in hint)
+    digits = sum(c.isdigit() for c in hint)
+    if digits >= 6 and digits >= letters:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

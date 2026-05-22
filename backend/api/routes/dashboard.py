@@ -1202,6 +1202,9 @@ _AMC_HINTS = [
 ]
 
 
+_BANK_REF_INLINE_RE = re.compile(r"\b[A-Za-z]{3,5}\d{10,}\b")
+
+
 def _scheme_label(desc: str, vendor_name: Optional[str]) -> str:
     """Best-effort scheme label for an investment txn. Prefers an AMC + scheme
     snippet from the description, falls back to vendor name, then a short desc.
@@ -1239,15 +1242,27 @@ def _scheme_label(desc: str, vendor_name: Optional[str]) -> str:
         return "NSE Clearing"
     if "bseclearing" in low or "bse clearing" in low:
         return "BSE Clearing"
+    if "mutual fund redemption" in low or "mutual_fund_redemption" in low:
+        return "Mutual Fund Redemption"
+    if "ppfas" in low:
+        return "Parag Parikh (PPFAS)"
 
-    if vendor_name:
+    # Fall back to vendor name only if it doesn't look like a bank RTGS ref.
+    if vendor_name and not _BANK_REF_INLINE_RE.fullmatch(vendor_name.strip()):
         return vendor_name
 
     # Strip "Net Purchase / Gross Purchase / Stamp Duty -" prefix if present.
     for prefix in ("net purchase", "gross purchase", "stamp duty"):
         if low.startswith(prefix):
-            return s[len(prefix):].lstrip(" -:")[:60] or s[:60]
-    return s[:60]
+            rest = s[len(prefix):].lstrip(" -:")[:60]
+            if rest and not _BANK_REF_INLINE_RE.fullmatch(rest.strip()):
+                return rest
+
+    # Final fallback: short description, but skip if it's just a bank ref.
+    short = s[:60]
+    if _BANK_REF_INLINE_RE.fullmatch(short.strip()):
+        return "Other investment"
+    return short
 
 
 class InvestmentSchemeOut(BaseModel):
