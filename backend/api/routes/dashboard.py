@@ -85,6 +85,15 @@ _CATEGORY_RULES: list[tuple[re.Pattern[str], str, str]] = [
     (re.compile(r"\b(insurance|policy|premium|lic|hdfc\s*life|term\s*plan|mediclaim|health\s*plan|max\s*life|tata\s*aig)\b", re.IGNORECASE), "Insurance", "#16a34a"),
     # People & ops
     (re.compile(r"\bsalary|payroll|wages?\b", re.IGNORECASE), "Payroll", "#6366f1"),
+    # Person-to-person bank transfers — common founder pattern (paying staff,
+    # contractors, family members, reimbursements). Without this rule these
+    # land in "Other" and drown out genuine spend categories on the donut.
+    # Matches:
+    #   "TRFR TO:NAME"            (HDFC/ICICI pattern)
+    #   "NEFT:IN.../BANKNAME/NAME"
+    #   "IMPS-... -NAME-..."
+    #   "UPI-NAME-..."
+    (re.compile(r"\b(trfr\s*to|neft.*[a-z]+\s*bank|imps[-/\s]|upi[-/\s])\b", re.IGNORECASE), "Personal transfers", "#9333ea"),
     (re.compile(r"\brent\b", re.IGNORECASE), "Rent", "#8b5cf6"),
     # Day-to-day
     (re.compile(r"\b(swiggy|zomato|food|cafe|coffee|restaurant|bundl)\b", re.IGNORECASE), "Food", "#10b981"),
@@ -243,10 +252,33 @@ def _categorize(
 # ---------------------------------------------------------------------------
 
 
+_DELTA_PCT_CAP = 999.0  # display ceiling — anything bigger is "uninformative"
+_DELTA_PCT_MIN_BASE = Decimal("1000")  # if |prev| < this, the % is meaningless
+
+
 def _signed_delta_pct(curr: Decimal, prev: Decimal) -> float:
-    if prev == 0:
-        return 0.0 if curr == 0 else 100.0
-    return float((curr - prev) / prev * 100)
+    """Signed percentage delta from prev → curr, with two safety rails:
+
+    1. If the comparison base is tiny (|prev| < ₹1,000) the percentage is
+       essentially meaningless — e.g. ₹50 → ₹1 Cr would show 2,000,000% which
+       drowns out any real signal. We return 0.0 in that case; callers/UI
+       can choose to render "—" instead of a number.
+    2. Even with a reasonable base, the result is clamped to ±999% so a
+       genuine 5,000% change just shows as ">999% up" without inflating the
+       sparkline.
+    """
+    abs_prev = abs(prev)
+    if abs_prev == 0 or abs_prev < _DELTA_PCT_MIN_BASE:
+        # Both zero → no change. One side near zero → not comparable.
+        if curr == 0 and prev == 0:
+            return 0.0
+        return 0.0
+    raw = float((curr - prev) / prev * 100)
+    if raw > _DELTA_PCT_CAP:
+        return _DELTA_PCT_CAP
+    if raw < -_DELTA_PCT_CAP:
+        return -_DELTA_PCT_CAP
+    return raw
 
 
 def _today_utc() -> date:
