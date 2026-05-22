@@ -20,6 +20,7 @@ import CashFlowChart, {
 import ExpenseDonut from "../components/charts/ExpenseDonut";
 import ForecastChart from "../components/charts/ForecastChart";
 import RecurringOutflows from "../components/RecurringOutflows";
+import CategoryDetailPanel from "../components/CategoryDetailPanel";
 import DateRangePicker, {
   type DateRange,
   presetToRange,
@@ -206,6 +207,9 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<DashboardSummaryOut | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Drill-down panel — which donut slice the user clicked into, if any.
+  const [openCategory, setOpenCategory] = useState<string | null>(null);
 
   // Cash-flow chart mode — Net flow / By category / With markers.
   // Restored from localStorage so the founder doesn't have to re-pick.
@@ -516,7 +520,10 @@ export default function Dashboard() {
 
           <SectionCard title="Expense breakdown" subtitle={`${rangeLabel} · by category`}>
             {vm.expenseByCategory.length > 0 ? (
-              <ExpenseDonut data={vm.expenseByCategory} />
+              <ExpenseDonut
+                data={vm.expenseByCategory}
+                onSliceClick={!demoMode ? setOpenCategory : undefined}
+              />
             ) : (
               <EmptyChart label="No expenses categorized yet." />
             )}
@@ -645,6 +652,15 @@ export default function Dashboard() {
           </SectionCard>
         </div>
       </div>
+
+      {openCategory && (
+        <CategoryDetailPanel
+          category={openCategory}
+          from={dateRange.from}
+          to={dateRange.to}
+          onClose={() => setOpenCategory(null)}
+        />
+      )}
     </>
   );
 }

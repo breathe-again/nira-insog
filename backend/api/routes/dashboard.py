@@ -32,6 +32,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
@@ -67,21 +68,75 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 # ---------------------------------------------------------------------------
 
 _CATEGORY_RULES: list[tuple[re.Pattern[str], str, str]] = [
+    # Investments & savings — large flows that aren't really "expenses" but
+    # founder probably wants to see them broken out.
+    (re.compile(r"\b(sgb|sovereign\s*gold|mutual\s*fund|nse|bse|equity|equities|bond|debenture|sip|swp|stp|mf\s*purchase|fund\s*purchase|silver\s*bond)\b", re.IGNORECASE), "Investments", "#0d9488"),
+    (re.compile(r"\b(hdfc\s*(flexi|asset|elss|cap|fund)|axis\s*(fund|elss)|sbi\s*(fund|elss)|icici\s*(fund|elss)|nippon\s*(fund)|kotak\s*(fund))\b", re.IGNORECASE), "Investments", "#0d9488"),
+    # Insurance — life, health, term.
+    (re.compile(r"\b(insurance|policy|premium|lic|hdfc\s*life|term\s*plan|mediclaim|health\s*plan|max\s*life|tata\s*aig)\b", re.IGNORECASE), "Insurance", "#16a34a"),
+    # People & ops
     (re.compile(r"\bsalary|payroll|wages?\b", re.IGNORECASE), "Payroll", "#6366f1"),
     (re.compile(r"\brent\b", re.IGNORECASE), "Rent", "#8b5cf6"),
-    (re.compile(r"\b(swiggy|zomato|food|cafe|coffee|restaurant)\b", re.IGNORECASE), "Food", "#10b981"),
-    (re.compile(r"\b(uber|ola|cab|rapido|metro|train|flight|travel)\b", re.IGNORECASE), "Travel", "#06b6d4"),
-    (re.compile(r"\b(aws|azure|gcp|cloud|github|saas|software|netflix|spotify|prime|hotstar)\b", re.IGNORECASE), "Software", "#0ea5e9"),
-    (re.compile(r"\b(gst|tds|tax)\b", re.IGNORECASE), "Tax", "#f43f5e"),
-    (re.compile(r"\b(marketing|ads?|advert|facebook|google\s*ads)\b", re.IGNORECASE), "Marketing", "#f59e0b"),
-    (re.compile(r"\b(loan|emi|mpokket|cred|interest|nbfc|nach)\b", re.IGNORECASE), "Finance", "#a855f7"),
-    (re.compile(r"\b(airtel|jio|vi|vodafone|bsnl|electricity|water|gas|utility|bill)\b", re.IGNORECASE), "Utilities", "#14b8a6"),
-    (re.compile(r"\b(amazon|flipkart|myntra|shopping)\b", re.IGNORECASE), "Shopping", "#ec4899"),
+    # Day-to-day
+    (re.compile(r"\b(swiggy|zomato|food|cafe|coffee|restaurant|bundl)\b", re.IGNORECASE), "Food", "#10b981"),
+    (re.compile(r"\b(uber|ola|cab|rapido|metro|train|flight|travel|irctc|indigo|vistara|spicejet|airfare)\b", re.IGNORECASE), "Travel", "#06b6d4"),
+    # Software & cloud
+    (re.compile(r"\b(aws|azure|gcp|cloud|github|saas|software|netflix|spotify|prime|hotstar|openai|anthropic|claude|chatgpt)\b", re.IGNORECASE), "Software", "#0ea5e9"),
+    # Tax (more specific so it doesn't swallow other things)
+    (re.compile(r"\b(gst\b|gstn|tds\b|advance\s*tax|income\s*tax\s*dep|i\.?t\.?\s*dep|26q|24q|tax\s*payment|challan)\b", re.IGNORECASE), "Tax", "#f43f5e"),
+    # Marketing
+    (re.compile(r"\b(marketing|ads?\b|advert|facebook|google\s*ads|linkedin|meta\s*ads)\b", re.IGNORECASE), "Marketing", "#f59e0b"),
+    # Lending
+    (re.compile(r"\b(loan|emi|mpokket|cred\b|interest\s*paid|nbfc|nach\s*debit|repayment)\b", re.IGNORECASE), "Finance", "#a855f7"),
+    # Utilities
+    (re.compile(r"\b(airtel|jio|vi\b|vodafone|bsnl|electricity|cesc|tata\s*power|water\s*bill|gas|utility\s*bill|broadband|wifi|internet)\b", re.IGNORECASE), "Utilities", "#14b8a6"),
+    # Shopping & e-commerce
+    (re.compile(r"\b(amazon|flipkart|myntra|shopping|reliance|dmart|big\s*basket|blinkit|zepto)\b", re.IGNORECASE), "Shopping", "#ec4899"),
+    # Bank fees + ATM / cash movements — surface these as their own category
+    # so the "Other" bucket isn't dominated by bank noise.
+    (re.compile(r"\b(bank\s*charge|sms\s*charge|annual\s*fee|maintenance\s*fee|service\s*charge|chq\s*return|cheque\s*return|cash\s*deposit|atm\s*withdrawal|debit\s*card\s*fee)\b", re.IGNORECASE), "Bank fees", "#64748b"),
+    # Refunds & reimbursements — usually money flowing back, but for the
+    # debit side of the chart we still want them surfaced.
+    (re.compile(r"\b(reimbursement|reimburse|refund\b|expense\s*claim|cashback)\b", re.IGNORECASE), "Reimbursement", "#fb7185"),
 ]
 _CATEGORY_OTHER = ("Other", "#94a3b8")
 
+# When the user has tagged a vendor with `default_expense_category`, we use
+# that string as a category name AND pick a stable color for it (so re-running
+# the dashboard produces the same color for the same category name).
+_DYNAMIC_PALETTE = [
+    "#6366f1", "#8b5cf6", "#10b981", "#06b6d4", "#0ea5e9",
+    "#f43f5e", "#f59e0b", "#a855f7", "#14b8a6", "#ec4899",
+    "#0d9488", "#16a34a", "#fb7185", "#84cc16", "#eab308",
+]
 
-def _categorize(description: str, vendor_name: Optional[str]) -> tuple[str, str]:
+
+def _color_for_dynamic(category_name: str) -> str:
+    """Stable hash-based color picker for user-defined category names so they
+    keep the same color across page loads."""
+    idx = abs(hash(category_name.lower())) % len(_DYNAMIC_PALETTE)
+    return _DYNAMIC_PALETTE[idx]
+
+
+def _categorize(
+    description: str,
+    vendor_name: Optional[str],
+    vendor_default_category: Optional[str] = None,
+) -> tuple[str, str]:
+    """Classify a transaction into (category_name, color).
+
+    Priority order (most-specific to least):
+      1. The vendor's user-set `default_expense_category` — when a founder /
+         CA has tagged a vendor with a category, that overrides every regex.
+         This is what makes categories DYNAMIC: as you tag vendors via the
+         feedback loop, the chart picks them up automatically.
+      2. The static regex rules in `_CATEGORY_RULES`.
+      3. "Other" fallback.
+    """
+    if vendor_default_category and vendor_default_category.strip():
+        name = vendor_default_category.strip()
+        return name, _color_for_dynamic(name)
+
     blob = f"{description or ''} {vendor_name or ''}".strip()
     for pat, name, color in _CATEGORY_RULES:
         if pat.search(blob):
@@ -396,12 +451,15 @@ def dashboard_summary(
     # ------------ Cash flow by category (advanced chart mode) ------------
     # Daily breakdown of debits grouped by the same category buckets the
     # donut uses. Lets the frontend stack-area "where my money went" by day.
+    # We pull vendor.default_expense_category so the categorizer can prefer
+    # user-tagged categories over the regex rules.
     cat_rows = db.execute(
         select(
             BankTransaction.txn_date,
             BankTransaction.description,
             BankTransaction.amount,
             Vendor.name,
+            Vendor.default_expense_category,
         )
         .outerjoin(Vendor, Vendor.id == BankTransaction.matched_vendor_id)
         .where(
@@ -418,8 +476,8 @@ def dashboard_summary(
     )
     # Track which categories actually appeared so the legend only shows real ones.
     seen_cats: dict[str, str] = {}  # name → color
-    for d, desc_text, amt, vname in cat_rows:
-        cat_name, cat_color = _categorize(desc_text, vname)
+    for d, desc_text, amt, vname, vcat in cat_rows:
+        cat_name, cat_color = _categorize(desc_text, vname, vcat)
         by_day_cat[d][cat_name] += Decimal(amt or 0)
         seen_cats.setdefault(cat_name, cat_color)
 
@@ -473,6 +531,7 @@ def dashboard_summary(
             BankTransaction.description,
             BankTransaction.amount,
             Vendor.name,
+            Vendor.default_expense_category,
         )
         .outerjoin(Vendor, Vendor.id == BankTransaction.matched_vendor_id)
         .where(
@@ -483,8 +542,8 @@ def dashboard_summary(
         )
     ).all()
     cat_totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
-    for desc_text, amt, vname in expense_rows:
-        cat = _categorize(desc_text, vname)
+    for desc_text, amt, vname, vcat in expense_rows:
+        cat = _categorize(desc_text, vname, vcat)
         cat_totals[cat] += Decimal(amt or 0)
     expense_breakdown = [
         CategorySliceOut(name=name, value=v, color=color)
@@ -787,3 +846,133 @@ def dashboard_summary(
         has_any_data=bank_txn_count > 0,
         bank_txn_count=bank_txn_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Category drill-down — "what's in this slice?"
+# ---------------------------------------------------------------------------
+
+
+class CategoryDetailRowOut(BaseModel):
+    """One contributor inside a category slice."""
+
+    vendor_name: Optional[str] = None
+    description_sample: str
+    txn_count: int
+    total: Decimal
+
+
+class CategoryDetailOut(BaseModel):
+    category: str
+    color: str
+    total: Decimal
+    txn_count: int
+    contributors: list[CategoryDetailRowOut]
+
+
+@router.get(
+    "/category-detail",
+    response_model=CategoryDetailOut,
+    summary="Drill-down: what's inside a category slice",
+)
+def category_detail(
+    category: str,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    org_id: uuid.UUID = Depends(current_org_id),
+) -> CategoryDetailOut:
+    """Return the top vendors / descriptions that contributed to the given
+    category slice. Used by the donut's click-to-explore behavior.
+
+    Date range mirrors the summary endpoint — defaults to the latest-anchored
+    30-day window when not specified."""
+    real_today = _today_utc()
+    latest_txn_date = db.scalar(
+        select(func.max(BankTransaction.txn_date)).where(BankTransaction.org_id == org_id)
+    )
+    if latest_txn_date is not None and (real_today - latest_txn_date).days > 30:
+        today = latest_txn_date
+    else:
+        today = real_today
+    if from_date and to_date:
+        window_start, window_end = (from_date, to_date) if from_date <= to_date else (to_date, from_date)
+    else:
+        window_start = today - timedelta(days=30)
+        window_end = today
+
+    rows = db.execute(
+        select(
+            BankTransaction.description,
+            BankTransaction.amount,
+            Vendor.name,
+            Vendor.default_expense_category,
+        )
+        .outerjoin(Vendor, Vendor.id == BankTransaction.matched_vendor_id)
+        .where(
+            BankTransaction.org_id == org_id,
+            BankTransaction.direction == "debit",
+            BankTransaction.txn_date >= window_start,
+            BankTransaction.txn_date <= window_end,
+        )
+    ).all()
+
+    target = category.strip()
+    color = ""
+    # Group by (vendor_name OR description-prefix) so the user sees what's
+    # actually inside the slice, not 200 individual transactions.
+    grouped: dict[str, dict] = {}
+    total = Decimal("0")
+    txn_count = 0
+    for desc_text, amt, vname, vcat in rows:
+        cat_name, cat_color = _categorize(desc_text, vname, vcat)
+        if cat_name != target:
+            continue
+        if not color:
+            color = cat_color
+        amt_dec = Decimal(amt or 0)
+        total += amt_dec
+        txn_count += 1
+        key = (vname or _short_desc(desc_text)).strip()
+        if not key:
+            key = "(unlabeled)"
+        bucket = grouped.setdefault(
+            key, {"vendor_name": vname, "description_sample": desc_text or "", "txn_count": 0, "total": Decimal("0")}
+        )
+        bucket["txn_count"] += 1
+        bucket["total"] += amt_dec
+        # Keep the longest description sample we've seen — usually more
+        # informative than the bank's truncated forms.
+        if len(desc_text or "") > len(bucket["description_sample"]):
+            bucket["description_sample"] = desc_text or ""
+
+    contributors = sorted(grouped.values(), key=lambda b: b["total"], reverse=True)[:limit]
+    return CategoryDetailOut(
+        category=target,
+        color=color or "#94a3b8",
+        total=total,
+        txn_count=txn_count,
+        contributors=[
+            CategoryDetailRowOut(
+                vendor_name=b["vendor_name"],
+                description_sample=(b["description_sample"] or "")[:200],
+                txn_count=b["txn_count"],
+                total=b["total"],
+            )
+            for b in contributors
+        ],
+    )
+
+
+def _short_desc(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    # Take the first 4 tokens — for things like 'INF/NEFT/.../from .../<dest>'
+    # the destination tail is usually further in. Fall back to the first
+    # alphabetic token.
+    parts = re.split(r"[/\s\-:|]+", s)
+    for p in parts:
+        if p and any(c.isalpha() for c in p):
+            return p[:40]
+    return s[:40]

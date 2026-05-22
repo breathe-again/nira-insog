@@ -150,6 +150,21 @@ export interface CashFlowMetaOut {
   category_palette: [string, string][]; // tuples of (name, hex color)
 }
 
+export interface CategoryDetailRowOut {
+  vendor_name: string | null;
+  description_sample: string;
+  txn_count: number;
+  total: string | number;
+}
+
+export interface CategoryDetailOut {
+  category: string;
+  color: string;
+  total: string | number;
+  txn_count: number;
+  contributors: CategoryDetailRowOut[];
+}
+
 // ---------- Learning ----------
 
 export interface PatternRowOut {
