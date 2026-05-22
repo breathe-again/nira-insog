@@ -364,6 +364,20 @@ Choose ONE of these document_type values based on what you actually see:
   - "sales_invoice"     — invoice WE issued to a customer
   - "receipt"           — a paid receipt / cash memo
   - "bank_statement"    — a list of bank transactions
+  - "compliance"        — a tax filing or regulatory document like GSTR-1,
+                          GSTR-3B, Form 24Q, Form 26Q, Form 27A, TDS return
+                          acknowledgement, profession-tax certificate, ARN
+                          receipt. Treat anything that's just proof-of-filing
+                          (no line items / no actual financial amounts WE pay
+                          or receive) as "compliance".
+
+Special cases:
+  - Mutual fund redemption / purchase / SIP statements: classify as
+    "bank_statement" with each fund-side movement as a separate transaction
+    in `transactions[]`. Include the scheme name in the `description`.
+  - Tax challan with a paid amount: classify as "receipt" with the amount.
+  - Acknowledgement-only TDS / GST PDFs (Form 24Q/26Q/27A/GSTR-1/GSTR-3B):
+    classify as "compliance" — do NOT invent an amount.
 {hint}
 For "purchase_invoice" / "sales_invoice" emit:
   {{
@@ -402,6 +416,17 @@ For "bank_statement" emit:
     "transactions": [
       {{"date": "YYYY-MM-DD", "description": "...", "amount": <number>, "direction": "debit" | "credit", "balance": <number>}}
     ]
+  }}
+
+For "compliance" emit (no amounts to invent):
+  {{
+    "document_type": "compliance",
+    "form_number":   "GSTR-3B" | "Form 26Q" | "Form 24Q" | "27A" | ...,
+    "period":        "Apr 2025" | "Q4 2025-26",
+    "financial_year":"2025-26",
+    "gstin":         "...",
+    "arn":           "...",
+    "deductor":      {{"name": "...", "tan_or_gstin": "..."}}
   }}
 
 Return ONLY the JSON object. Begin your response with `{{` and end with `}}`.

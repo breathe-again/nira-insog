@@ -526,7 +526,18 @@ def dashboard_summary(
     )
 
     # ------------ Expense breakdown (selected window, by category) ------------
-    expense_rows = db.execute(
+    # Combines TWO sources:
+    #   1. Bank-transaction debits (cash that actually went out).
+    #   2. Purchase invoices (money billed to us — usually pays via a bank
+    #      txn later but for tenants who haven't uploaded statements yet,
+    #      the invoices ARE the only signal of what they're spending on).
+    #
+    # We don't dedupe here because we don't yet have invoice→bank linking
+    # (Session 3 invoice reconciliation). Instead we tag each contribution
+    # with its source so the drill-down can show "invoiced ₹X / paid ₹Y".
+    cat_totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
+
+    bank_rows = db.execute(
         select(
             BankTransaction.description,
             BankTransaction.amount,
@@ -541,10 +552,34 @@ def dashboard_summary(
             BankTransaction.txn_date <= window_end,
         )
     ).all()
-    cat_totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
-    for desc_text, amt, vname, vcat in expense_rows:
+    for desc_text, amt, vname, vcat in bank_rows:
         cat = _categorize(desc_text, vname, vcat)
         cat_totals[cat] += Decimal(amt or 0)
+
+    # Purchase invoices in the same window — keyed by issue_date to match
+    # the chart's time window.
+    invoice_rows = db.execute(
+        select(
+            Invoice.invoice_number,
+            Invoice.total,
+            Vendor.name,
+            Vendor.default_expense_category,
+        )
+        .outerjoin(Vendor, Vendor.id == Invoice.vendor_id)
+        .where(
+            Invoice.org_id == org_id,
+            Invoice.type == "purchase",
+            Invoice.issue_date >= window_start,
+            Invoice.issue_date <= window_end,
+        )
+    ).all()
+    for inv_num, total, vname, vcat in invoice_rows:
+        # Use the invoice number as the "description" — it gives the
+        # categorizer a chance to read AWS / Google / etc. out of it.
+        # The vendor name is the bigger signal anyway.
+        cat = _categorize(inv_num or "", vname, vcat)
+        cat_totals[cat] += Decimal(total or 0)
+
     expense_breakdown = [
         CategorySliceOut(name=name, value=v, color=color)
         for (name, color), v in sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)
@@ -902,7 +937,14 @@ def category_detail(
         window_start = today - timedelta(days=30)
         window_end = today
 
-    rows = db.execute(
+    target = category.strip()
+    color = ""
+    grouped: dict[str, dict] = {}
+    total = Decimal("0")
+    txn_count = 0
+
+    # Source 1 — bank-transaction debits
+    bank_rows = db.execute(
         select(
             BankTransaction.description,
             BankTransaction.amount,
@@ -917,15 +959,7 @@ def category_detail(
             BankTransaction.txn_date <= window_end,
         )
     ).all()
-
-    target = category.strip()
-    color = ""
-    # Group by (vendor_name OR description-prefix) so the user sees what's
-    # actually inside the slice, not 200 individual transactions.
-    grouped: dict[str, dict] = {}
-    total = Decimal("0")
-    txn_count = 0
-    for desc_text, amt, vname, vcat in rows:
+    for desc_text, amt, vname, vcat in bank_rows:
         cat_name, cat_color = _categorize(desc_text, vname, vcat)
         if cat_name != target:
             continue
@@ -934,18 +968,60 @@ def category_detail(
         amt_dec = Decimal(amt or 0)
         total += amt_dec
         txn_count += 1
-        key = (vname or _short_desc(desc_text)).strip()
-        if not key:
-            key = "(unlabeled)"
+        key = (vname or _short_desc(desc_text)).strip() or "(unlabeled)"
         bucket = grouped.setdefault(
-            key, {"vendor_name": vname, "description_sample": desc_text or "", "txn_count": 0, "total": Decimal("0")}
+            key,
+            {
+                "vendor_name": vname,
+                "description_sample": desc_text or "",
+                "txn_count": 0,
+                "total": Decimal("0"),
+            },
         )
         bucket["txn_count"] += 1
         bucket["total"] += amt_dec
-        # Keep the longest description sample we've seen — usually more
-        # informative than the bank's truncated forms.
         if len(desc_text or "") > len(bucket["description_sample"]):
             bucket["description_sample"] = desc_text or ""
+
+    # Source 2 — purchase invoices (the new addition that surfaces mutual
+    # funds + AWS + Google + CESC etc. for tenants whose bank statement
+    # doesn't cover everything).
+    inv_rows = db.execute(
+        select(
+            Invoice.invoice_number,
+            Invoice.total,
+            Vendor.name,
+            Vendor.default_expense_category,
+        )
+        .outerjoin(Vendor, Vendor.id == Invoice.vendor_id)
+        .where(
+            Invoice.org_id == org_id,
+            Invoice.type == "purchase",
+            Invoice.issue_date >= window_start,
+            Invoice.issue_date <= window_end,
+        )
+    ).all()
+    for inv_num, inv_total, vname, vcat in inv_rows:
+        cat_name, cat_color = _categorize(inv_num or "", vname, vcat)
+        if cat_name != target:
+            continue
+        if not color:
+            color = cat_color
+        amt_dec = Decimal(inv_total or 0)
+        total += amt_dec
+        txn_count += 1
+        key = (vname or _short_desc(inv_num or "")).strip() or "(unlabeled)"
+        bucket = grouped.setdefault(
+            key,
+            {
+                "vendor_name": vname,
+                "description_sample": f"Invoice {inv_num or ''}",
+                "txn_count": 0,
+                "total": Decimal("0"),
+            },
+        )
+        bucket["txn_count"] += 1
+        bucket["total"] += amt_dec
 
     contributors = sorted(grouped.values(), key=lambda b: b["total"], reverse=True)[:limit]
     return CategoryDetailOut(

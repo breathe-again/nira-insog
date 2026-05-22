@@ -137,6 +137,40 @@ class BankStatementDraft:
 
 
 @dataclass(slots=True)
+class ComplianceDraft:
+    """A government / tax / regulatory filing — has no financial line items
+    we'd want to put on the dashboard, but it IS a real document the user
+    uploaded and wants searchable.
+
+    Examples: GSTR-1, GSTR-3B, Form 24Q, Form 26Q, Form 27A, TDS filing
+    acknowledgements, profession-tax certificates.
+
+    The worker records the doc as `document_type='compliance'` with the raw
+    extraction kept on `Document.raw_extraction_json` for later inspection.
+    No Invoice / Receipt / BankTxn rows are created.
+    """
+
+    form_or_type: Optional[str] = None    # e.g. "GSTR-3B", "Form 26Q"
+    period: Optional[str] = None          # e.g. "Apr 2025 - Jun 2025"
+    gstin: Optional[str] = None
+    counterparty: Optional[CounterpartyHint] = None
+    notes: Optional[str] = None
+
+    def as_dict(self) -> dict:
+        return {
+            "form_or_type": self.form_or_type,
+            "period": self.period,
+            "gstin": self.gstin,
+            "notes": self.notes,
+            "counterparty": (
+                {"name": self.counterparty.name, "gstin": self.counterparty.gstin}
+                if self.counterparty
+                else None
+            ),
+        }
+
+
+@dataclass(slots=True)
 class ReceiptDraft:
     date: date
     amount: Decimal
@@ -249,12 +283,65 @@ def _extract_counterparty(
 # ---------------------------------------------------------------------------
 
 
+# Document-type labels the LLM might return for things we can't / shouldn't
+# try to coerce into invoice/receipt shape. These all flow into the
+# compliance bucket — recorded, searchable, but no financial extraction.
+_COMPLIANCE_TYPES = {
+    "compliance",
+    "tax_filing",
+    "tax_return",
+    "tds_return",
+    "tds_filing",
+    "gst_return",
+    "gstr1",
+    "gstr3b",
+    "gstr-1",
+    "gstr-3b",
+    "form_24q",
+    "form_26q",
+    "form_27a",
+    "form_16",
+    "form_16a",
+    "challan",
+    "certificate",
+    "acknowledgement",
+    "acknowledgment",
+    "filing_token",
+    "regulatory",
+    "other",
+    "unknown",
+}
+
+# Signature keys present in compliance-style payloads. If the LLM gives us a
+# payload heavy on these without a meaningful amount/invoice_number/totals,
+# we treat it as compliance instead of crashing.
+_COMPLIANCE_SIGNATURE_KEYS = {
+    "form_number",
+    "form_type",
+    "form",
+    "arn",
+    "arn_date",
+    "filing_period",
+    "filing_year",
+    "filing_date",
+    "assessment_year",
+    "financial_year",
+    "tax_deduction_account_number",
+    "permanent_account_number",
+    "gstin",
+    "deductor",
+    "responsible_person",
+}
+
+
 def parse_extracted_json(
     payload: dict,
     *,
     fallback_document_type: Optional[str] = None,
-) -> InvoiceDraft | ReceiptDraft | BankStatementDraft:
-    """Dispatch on document_type. Raises ExtractedJSONError if it can't be classified."""
+) -> InvoiceDraft | ReceiptDraft | BankStatementDraft | ComplianceDraft:
+    """Dispatch on document_type. Returns a ComplianceDraft for tax/regulatory
+    filings that have no financial line items we'd want to surface. Only
+    raises ExtractedJSONError on truly broken payloads (not dicts)."""
     if not isinstance(payload, dict):
         raise ExtractedJSONError(
             f"expected JSON object at top level, got {type(payload).__name__}"
@@ -266,24 +353,88 @@ def parse_extracted_json(
         .lower()
     )
 
+    # Compliance path — the LLM said this is a tax/regulatory filing.
+    if doc_type in _COMPLIANCE_TYPES:
+        return _parse_compliance(payload, declared_type=doc_type)
+
     if doc_type in ("sales_invoice", "purchase_invoice", "invoice"):
-        return _parse_invoice(payload, declared_type=doc_type)
+        try:
+            return _parse_invoice(payload, declared_type=doc_type)
+        except ExtractedJSONError:
+            # If the LLM said "invoice" but missed invoice_number/total,
+            # don't crash — fall back to compliance so the doc indexes.
+            return _parse_compliance(payload, declared_type=doc_type)
     if doc_type == "receipt":
-        return _parse_receipt(payload)
+        try:
+            return _parse_receipt(payload)
+        except ExtractedJSONError:
+            return _parse_compliance(payload, declared_type=doc_type)
     if doc_type == "bank_statement":
         return _parse_bank_statement(payload)
 
     # Heuristic fallback: presence of transactions[] ⇒ bank statement; etc.
     if isinstance(payload.get("transactions"), list) and payload["transactions"]:
         return _parse_bank_statement(payload)
-    if payload.get("invoice_number"):
-        return _parse_invoice(payload, declared_type="invoice")
+    if payload.get("invoice_number") and (payload.get("total") or payload.get("amount")):
+        try:
+            return _parse_invoice(payload, declared_type="invoice")
+        except ExtractedJSONError:
+            return _parse_compliance(payload, declared_type=doc_type)
     if payload.get("amount") or payload.get("total"):
-        return _parse_receipt(payload)
+        try:
+            return _parse_receipt(payload)
+        except ExtractedJSONError:
+            return _parse_compliance(payload, declared_type=doc_type)
 
-    raise ExtractedJSONError(
-        f"could not classify extracted payload (document_type='{doc_type}', "
-        f"keys={list(payload.keys())[:8]})"
+    # No financial shape — but the LLM saw something. If the payload has
+    # compliance-signature keys (ARN, GSTIN, financial_year, etc.) call it a
+    # compliance doc. Otherwise still don't crash — record as compliance with
+    # whatever we got.
+    keys = set(payload.keys())
+    if keys & _COMPLIANCE_SIGNATURE_KEYS:
+        return _parse_compliance(payload, declared_type=doc_type or "compliance")
+
+    return _parse_compliance(payload, declared_type=doc_type or "unknown")
+
+
+def _parse_compliance(payload: dict, *, declared_type: str) -> ComplianceDraft:
+    """Best-effort metadata extraction from a tax/regulatory filing.
+
+    All fields optional — we just want a useful summary on the document
+    detail page. The full LLM payload is still preserved on
+    Document.raw_extraction_json by the worker."""
+    form_or_type = (
+        payload.get("form_number")
+        or payload.get("form_type")
+        or payload.get("form")
+        or payload.get("document_subtype")
+        or declared_type
+        or None
+    )
+    period = (
+        payload.get("filing_period")
+        or payload.get("period")
+        or payload.get("financial_year")
+        or payload.get("assessment_year")
+        or None
+    )
+    gstin = (
+        payload.get("gstin")
+        or payload.get("tax_deduction_account_number")
+        or payload.get("permanent_account_number")
+        or None
+    )
+    counterparty = _extract_counterparty(
+        payload, keys=("deductor", "responsible_person", "vendor", "client", "counterparty")
+    )
+    notes = payload.get("document_description") or payload.get("notes")
+
+    return ComplianceDraft(
+        form_or_type=str(form_or_type) if form_or_type else None,
+        period=str(period) if period else None,
+        gstin=str(gstin).strip().upper() if gstin else None,
+        counterparty=counterparty,
+        notes=str(notes) if notes else None,
     )
 
 

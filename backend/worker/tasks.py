@@ -57,6 +57,7 @@ from services.extractors import llm_vision
 from services.parsers.bank_csv import parse_bank_csv
 from services.parsers.extracted_json import (
     BankStatementDraft,
+    ComplianceDraft,
     ExtractedJSONError,
     InvoiceDraft,
     ReceiptDraft,
@@ -325,7 +326,13 @@ def _run_extracted(db: Session, doc: Document) -> dict:
     entities_created = 0
     anomalies_emitted = 0
 
-    if isinstance(draft, InvoiceDraft):
+    if isinstance(draft, ComplianceDraft):
+        # Government / tax / regulatory filing. We keep the raw payload on the
+        # document for searchability but do NOT create Invoice/Receipt rows —
+        # there's nothing to put on the dashboard.
+        doc.document_type = "compliance"
+
+    elif isinstance(draft, InvoiceDraft):
         invoice = _persist_invoice(db, doc, draft)
         entities_created += 1
         doc.document_type = (
