@@ -71,7 +71,16 @@ _CATEGORY_RULES: list[tuple[re.Pattern[str], str, str]] = [
     # Investments & savings — large flows that aren't really "expenses" but
     # founder probably wants to see them broken out.
     (re.compile(r"\b(sgb|sovereign\s*gold|mutual\s*fund|nse|bse|equity|equities|bond|debenture|sip|swp|stp|mf\s*purchase|fund\s*purchase|silver\s*bond)\b", re.IGNORECASE), "Investments", "#0d9488"),
-    (re.compile(r"\b(hdfc\s*(flexi|asset|elss|cap|fund)|axis\s*(fund|elss)|sbi\s*(fund|elss)|icici\s*(fund|elss)|nippon\s*(fund)|kotak\s*(fund))\b", re.IGNORECASE), "Investments", "#0d9488"),
+    (re.compile(r"\b(hdfc\s*(flexi|asset|elss|cap|fund)|axis\s*(fund|elss)|sbi\s*(fund|elss)|icici\s*(fund|elss)|nippon\s*(fund)|kotak\s*(fund)|parag\s*parikh|ppfas|mirae|quant\s*(fund|mutual)|uti\s*(fund|mutual)|tata\s*(fund|mutual)|edelweiss\s*(fund|mutual)|dsp\s*(fund|mutual)|aditya\s*birla\s*(fund|mutual)|motilal\s*oswal)\b", re.IGNORECASE), "Investments", "#0d9488"),
+    # ISIN code (INF followed by 9 alphanumerics) — guaranteed mutual-fund
+    # marker that survives any prefix/suffix in the description.
+    (re.compile(r"\bINF[0-9A-Z]{9}\b", re.IGNORECASE), "Investments", "#0d9488"),
+    # NSE/BSE Clearing transfers — bank statements often glue them as one
+    # token like "NSEClearingNewMutualFund", which the \b-anchored "nse"
+    # rule above misses. Match without word-boundary on the right.
+    (re.compile(r"(nse|bse)\s*clearing|clearing\s*new\s*mutual|flexi\s*cap|elss|nav\s*\d|isin\b|folio\s*(no|number)|scheme\s*name|asset\s*management|amc\b", re.IGNORECASE), "Investments", "#0d9488"),
+    # Stamp duty in a fund/ISIN/scheme context is part of an MF buy.
+    (re.compile(r"stamp\s*duty.*(fund|scheme|inf[0-9a-z]{9}|cap)", re.IGNORECASE), "Investments", "#0d9488"),
     # Insurance — life, health, term.
     (re.compile(r"\b(insurance|policy|premium|lic|hdfc\s*life|term\s*plan|mediclaim|health\s*plan|max\s*life|tata\s*aig)\b", re.IGNORECASE), "Insurance", "#16a34a"),
     # People & ops
