@@ -68,6 +68,31 @@ _ALLOWED_TABLES = {
     "recurring_patterns",
 }
 
+# Postgres set-returning functions Claude may use inside FROM / JOIN. They
+# look like tables to a naive regex (`FROM unnest(...)`) but they're built-in
+# functions — they don't read any table and are always safe. Add to this list
+# only functions that can't reach into the DB.
+_SAFE_FROM_FUNCTIONS = {
+    "unnest",
+    "generate_series",
+    "regexp_split_to_table",
+    "string_to_table",
+    "jsonb_array_elements",
+    "jsonb_array_elements_text",
+    "jsonb_each",
+    "jsonb_each_text",
+    "jsonb_object_keys",
+    "json_array_elements",
+    "json_array_elements_text",
+    "json_each",
+    "json_each_text",
+    "json_object_keys",
+    # values() lists like FROM (VALUES (1),(2)) AS t(x) — alias is matched
+    # before the parens so they don't end up in `referenced` anyway, but
+    # adding `values` here makes the intent explicit.
+    "values",
+}
+
 # Hard-banned tokens — any of these in the proposed SQL → reject.
 _BANNED_PATTERNS = [
     re.compile(r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|vacuum)\b", re.IGNORECASE),
@@ -276,9 +301,34 @@ def validate_sql(sql: str) -> str:
         m.group(1).lower()
         for m in re.finditer(r",\s*(\w+)\s+AS\s*\(", cleaned, flags=re.IGNORECASE)
     )
-    referenced = set(re.findall(r"\bFROM\s+(\w+)|\bJOIN\s+(\w+)", cleaned, flags=re.IGNORECASE))
+    # Match FROM/JOIN <ident>, but only when followed by whitespace, comma,
+    # closing paren, or end-of-string. A "(" after the identifier means it's
+    # a function call (e.g. FROM unnest(ARRAY[...])), which we whitelist
+    # separately below.
+    referenced = set(
+        re.findall(
+            r"\bFROM\s+(\w+)(?=\s|,|\)|$)|\bJOIN\s+(\w+)(?=\s|,|\)|$)",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+    )
     flat = {t.lower() for pair in referenced for t in pair if t}
-    bad = flat - _ALLOWED_TABLES - cte_aliases
+    # Also capture function calls so we can confirm only SAFE ones appear in
+    # FROM/JOIN position. Anything else (like FROM pg_stat_activity(...))
+    # would be caught by _BANNED_PATTERNS already, but this guards against
+    # future regressions.
+    from_funcs = set(
+        m.group(1).lower()
+        for m in re.finditer(
+            r"\b(?:FROM|JOIN)\s+(\w+)\s*\(", cleaned, flags=re.IGNORECASE
+        )
+    )
+    unsafe_funcs = from_funcs - _SAFE_FROM_FUNCTIONS
+    if unsafe_funcs:
+        raise QAError(
+            f"disallowed function in FROM/JOIN: {sorted(unsafe_funcs)}"
+        )
+    bad = flat - _ALLOWED_TABLES - cte_aliases - _SAFE_FROM_FUNCTIONS
     if bad:
         raise QAError(f"unknown table(s) referenced: {sorted(bad)}")
 
