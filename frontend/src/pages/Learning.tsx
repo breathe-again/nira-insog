@@ -108,36 +108,41 @@ export default function Learning() {
   return (
     <>
       <TopBar
-        title="Learning & Training"
+        title="Learning"
         subtitle="What the system has learned from your data"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-nowrap">
             <button
               type="button"
               onClick={handleBackfillEmbeddings}
               disabled={embedding}
-              className="inline-flex items-center gap-2 px-3 h-9 rounded-lg ring-1 ring-ink-200 bg-white text-sm font-medium text-ink-800 hover:bg-ink-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-2.5 h-9 rounded-lg ring-1 ring-ink-200 bg-white text-xs font-medium text-ink-800 hover:bg-ink-50 disabled:opacity-50 whitespace-nowrap"
               title="Compute semantic embeddings for every transaction"
             >
               {embedding ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Boxes className="h-4 w-4" />
+                <Boxes className="h-3.5 w-3.5" />
               )}
-              {embedding ? "Embedding…" : "Backfill embeddings"}
+              <span className="hidden sm:inline">
+                {embedding ? "Embedding…" : "Backfill"}
+              </span>
             </button>
             <button
               type="button"
               onClick={handleRetrain}
               disabled={retraining}
-              className="inline-flex items-center gap-2 px-3 h-9 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-2.5 h-9 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-700 disabled:opacity-50 whitespace-nowrap"
+              title="Re-run pattern detection + missed-payment + auto-category on existing data"
             >
               {retraining ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Play className="h-4 w-4" />
+                <Play className="h-3.5 w-3.5" />
               )}
-              {retraining ? "Retraining…" : "Retrain on existing data"}
+              <span className="hidden sm:inline">
+                {retraining ? "Retraining…" : "Retrain"}
+              </span>
             </button>
           </div>
         }

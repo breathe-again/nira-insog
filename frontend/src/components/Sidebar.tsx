@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   LogOut,
   type LucideIcon,
+  MessageSquare,
   Search,
   Settings,
   Sparkles,
@@ -25,6 +26,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Workspace",
     items: [
       { to: "/", label: "Dashboard", Icon: LayoutDashboard },
+      { to: "/ask", label: "Ask", Icon: MessageSquare },
       { to: "/inbox", label: "Inbox", Icon: Inbox },
       { to: "/search", label: "Search", Icon: Search },
       { to: "/insights", label: "Insights", Icon: Sparkles },

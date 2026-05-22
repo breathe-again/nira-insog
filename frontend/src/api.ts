@@ -11,6 +11,7 @@
 
 import type {
   ApiHealth,
+  AskOut,
   AuthMeOut,
   BackfillEmbeddingsOut,
   DashboardSummaryOut,
@@ -228,6 +229,13 @@ export const api = {
     const params = new URLSearchParams({ q, limit: String(limit) });
     return request<SearchOut>(`/api/search?${params.toString()}`);
   },
+
+  // ---------- Q&A ----------
+  ask: (question: string) =>
+    request<AskOut>("/api/qa/ask", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
 };
 
 export { API_BASE };

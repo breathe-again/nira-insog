@@ -8,10 +8,17 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Search as SearchIcon, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  Boxes,
+  CheckCircle2,
+  Loader2,
+  Search as SearchIcon,
+  Sparkles,
+} from "lucide-react";
 import TopBar from "../components/TopBar";
 import { api } from "../api";
-import type { SearchHitOut } from "../types";
+import type { EmbeddingCoverageOut, SearchHitOut } from "../types";
 import { formatINRShort } from "../lib/format";
 import { cn } from "../lib/cn";
 
@@ -32,6 +39,48 @@ export default function Search() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<number | null>(null);
+
+  // Coverage state — drives the "Run backfill" banner that explains 0 results
+  // BEFORE the user gets confused.
+  const [coverage, setCoverage] = useState<EmbeddingCoverageOut | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillNote, setBackfillNote] = useState<string | null>(null);
+
+  // Probe coverage on mount so we know whether to show the empty-search
+  // explanation banner.
+  const refreshCoverage = useCallback(async () => {
+    try {
+      const s = await api.learningStatus();
+      setCoverage(s.embedding_coverage);
+      setEnabled(s.embedding_coverage.enabled);
+    } catch {
+      // non-fatal — coverage stays null, banner hides
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCoverage();
+  }, [refreshCoverage]);
+
+  async function handleBackfill() {
+    setBackfilling(true);
+    setBackfillNote(null);
+    try {
+      const result = await api.backfillEmbeddings();
+      if (!result.enabled) {
+        setBackfillNote(
+          result.skipped_reason ?? "Embeddings are not enabled on the server.",
+        );
+      } else {
+        setBackfillNote(`Embedded ${result.embedded} of ${result.total} transactions.`);
+      }
+      await refreshCoverage();
+    } catch (e) {
+      setBackfillNote(e instanceof Error ? e.message : "Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  }
 
   const runSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
@@ -90,6 +139,16 @@ export default function Search() {
           )}
         </div>
 
+        {/* Coverage-aware status banner — explains 0-results BEFORE the user
+            gets confused. */}
+        <CoverageBanner
+          coverage={coverage}
+          enabled={enabled}
+          backfilling={backfilling}
+          note={backfillNote}
+          onBackfill={handleBackfill}
+        />
+
         {!query && (
           <div className="rounded-2xl bg-white ring-1 ring-ink-200 p-5">
             <div className="flex items-center gap-2 text-sm font-semibold text-ink-900">
@@ -112,13 +171,6 @@ export default function Search() {
               Powered by sentence-transformer embeddings. Finds transactions
               even when descriptions don't contain the exact word.
             </p>
-          </div>
-        )}
-
-        {enabled === false && (
-          <div className="rounded-xl bg-amber-50 ring-1 ring-amber-200 text-amber-800 px-4 py-3 text-sm">
-            Semantic search is not enabled on the server yet — go to{" "}
-            <b>Learning</b> → run <b>Backfill embeddings</b> to switch it on.
           </div>
         )}
 
@@ -221,5 +273,133 @@ function SearchRow({ hit }: { hit: SearchHitOut }) {
         )}
       </div>
     </li>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Coverage banner — explains why search may return zero results before the
+// user gets frustrated. States:
+//   1. pgvector missing on the DB → tell the user (no CTA, server-side fix).
+//   2. Coverage 0% → big "Run backfill" CTA.
+//   3. Partial coverage → smaller "Top up index" pill.
+//   4. 100% — quiet green tick.
+// ---------------------------------------------------------------------------
+
+function CoverageBanner({
+  coverage,
+  enabled,
+  backfilling,
+  note,
+  onBackfill,
+}: {
+  coverage: EmbeddingCoverageOut | null;
+  enabled: boolean | null;
+  backfilling: boolean;
+  note: string | null;
+  onBackfill: () => void;
+}) {
+  if (coverage === null) return null;
+
+  if (enabled === false) {
+    return (
+      <div className="rounded-xl bg-amber-50 ring-1 ring-amber-200 text-amber-900 px-4 py-3 text-sm flex items-start gap-3">
+        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+        <div>
+          <div className="font-semibold">Semantic search is not enabled.</div>
+          <div className="text-amber-800 mt-0.5">
+            The database needs the{" "}
+            <code className="px-1 rounded bg-amber-100">vector</code>{" "}
+            extension. Run{" "}
+            <code className="px-1 rounded bg-amber-100">
+              CREATE EXTENSION vector;
+            </code>{" "}
+            on Neon and restart the API, then come back here.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const { embedded, total, coverage_pct } = coverage;
+
+  if (total === 0) {
+    return (
+      <div className="rounded-xl bg-ink-50 ring-1 ring-ink-200 text-ink-700 px-4 py-3 text-sm">
+        Upload at least one bank statement to populate semantic search.
+      </div>
+    );
+  }
+
+  if (embedded === 0) {
+    return (
+      <div className="rounded-xl bg-violet-50 ring-1 ring-violet-200 text-violet-900 px-4 py-3 text-sm flex items-start gap-3">
+        <Boxes className="h-4 w-4 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold">
+            Semantic search isn't ready yet.
+          </div>
+          <div className="text-violet-800 mt-0.5">
+            We need to compute embeddings for your {total} transaction
+            {total === 1 ? "" : "s"} first. Takes about{" "}
+            {Math.max(1, Math.ceil(total / 100) * 30)} seconds — one click
+            and you're done.
+          </div>
+          {note && <div className="text-xs text-violet-700 mt-2">{note}</div>}
+        </div>
+        <button
+          type="button"
+          onClick={onBackfill}
+          disabled={backfilling}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3 h-8 rounded-lg bg-violet-600 text-white text-xs font-medium hover:bg-violet-700 disabled:opacity-50"
+        >
+          {backfilling ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Boxes className="h-3.5 w-3.5" />
+          )}
+          {backfilling ? "Embedding…" : "Run backfill"}
+        </button>
+      </div>
+    );
+  }
+
+  if (coverage_pct < 100) {
+    return (
+      <div className="rounded-xl bg-brand-50 ring-1 ring-brand-200 text-brand-900 px-4 py-3 text-sm flex items-start gap-3">
+        <Boxes className="h-4 w-4 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="font-medium">
+            {embedded} of {total} transactions indexed (
+            {coverage_pct.toFixed(0)}%).
+          </div>
+          <div className="text-brand-800 text-xs mt-0.5">
+            Newer uploads need embedding before they're searchable here.
+          </div>
+          {note && <div className="text-xs text-brand-700 mt-1">{note}</div>}
+        </div>
+        <button
+          type="button"
+          onClick={onBackfill}
+          disabled={backfilling}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3 h-8 rounded-lg ring-1 ring-brand-300 bg-white text-brand-700 text-xs font-medium hover:bg-brand-100 disabled:opacity-50"
+        >
+          {backfilling ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : null}
+          Top up index
+        </button>
+      </div>
+    );
+  }
+
+  // 100% — quiet success
+  return (
+    <div className="flex items-center gap-2 text-xs text-emerald-700">
+      <CheckCircle2 className="h-3.5 w-3.5" />
+      <span>
+        All {total} transactions indexed.{note ? ` ${note}` : ""}
+      </span>
+    </div>
   );
 }

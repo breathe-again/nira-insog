@@ -5,6 +5,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
 import Inbox from "./pages/Inbox";
 import DocumentDetail from "./pages/DocumentDetail";
+import Ask from "./pages/Ask";
 import Insights from "./pages/Insights";
 import Learning from "./pages/Learning";
 import Search from "./pages/Search";
@@ -30,6 +31,7 @@ export default function App() {
               <Route path="dashboard" element={<Navigate to="/" replace />} />
               <Route path="inbox" element={<Inbox />} />
               <Route path="inbox/:id" element={<DocumentDetail />} />
+              <Route path="ask" element={<Ask />} />
               <Route path="insights" element={<Insights />} />
               <Route path="learning" element={<Learning />} />
               <Route path="search" element={<Search />} />

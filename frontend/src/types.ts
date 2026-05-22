@@ -230,6 +230,16 @@ export interface BackfillEmbeddingsOut {
   skipped_reason?: string | null;
 }
 
+// ---------- Q&A ----------
+
+export interface AskOut {
+  question: string;
+  sql: string | null;
+  row_count: number;
+  sample: Record<string, unknown>[];
+  answer: string;
+}
+
 export interface DashboardSummaryOut {
   cash_position: KpiOut;
   receivables: KpiOut;

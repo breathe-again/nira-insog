@@ -49,6 +49,7 @@ from .routes.documents import router as documents_router
 from .routes.feedback import router as feedback_router
 from .routes.insights import router as insights_router
 from .routes.learning import router as learning_router
+from .routes.qa import router as qa_router
 from .routes.search import router as search_router
 from .routes.vendors import router as vendors_router
 from common.db import SessionLocal
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router)
     app.include_router(feedback_router)
     app.include_router(learning_router)
+    app.include_router(qa_router)
     app.include_router(search_router)
 
     @app.get("/")
