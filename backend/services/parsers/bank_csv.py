@@ -79,6 +79,19 @@ class ParseReport:
     rows_skipped: int = 0
     errors: list[str] = field(default_factory=list)
 
+    # ---- Balance reconciliation (P2) ----
+    # Filled by reconcile_balances(). When the statement carries an opening
+    # AND closing balance, we verify:
+    #     opening + Σ(credits) - Σ(debits) == closing
+    # to the rupee. Any deviation means the parse missed (or misread)
+    # rows, and the document should land in a "review parse" queue.
+    opening_balance: Optional[Decimal] = None
+    closing_balance: Optional[Decimal] = None
+    computed_closing: Optional[Decimal] = None  # opening + credits − debits
+    balance_delta: Optional[Decimal] = None     # computed_closing − closing_balance
+    reconciled: Optional[bool] = None           # True if abs(delta) ≤ 1 paisa
+    parse_confidence: float = 1.0               # 0.0–1.0; 1.0 = perfect
+
 
 # ---------------------------------------------------------------------------
 # Header detection
@@ -425,7 +438,150 @@ def parse_bank_csv(content: str | bytes) -> tuple[list[BankTxnDraft], ParseRepor
         drafts.append(draft)
         report.rows_parsed += 1
 
+    # ---- Balance reconciliation (P2) ----
+    # Look for opening/closing balance lines in the document, then verify
+    # that `opening + Σ(credits) − Σ(debits) == closing` to the rupee.
+    _detect_opening_closing_balance(rows, header_idx, report, drafts, balance_col)
+    _reconcile_balances(drafts, report)
+
     return drafts, report
+
+
+# ---------------------------------------------------------------------------
+# Balance detection + reconciliation (P2)
+# ---------------------------------------------------------------------------
+
+
+# Phrases that mark a line as the opening / closing balance.  We scan the
+# whole CSV — these often appear in metadata rows above the header or as
+# footer lines below the data — not just the parsed-transaction range.
+_OPENING_PHRASES = (
+    "opening balance",
+    "balance b/f",
+    "balance brought forward",
+    "previous balance",
+    "ob",  # rare; only matches as standalone token
+)
+_CLOSING_PHRASES = (
+    "closing balance",
+    "balance c/f",
+    "balance carried forward",
+    "ending balance",
+    "final balance",
+    "cb",
+)
+
+
+def _detect_opening_closing_balance(
+    rows: list[list[str]],
+    header_idx: int,
+    report: ParseReport,
+    drafts: list[BankTxnDraft],
+    balance_col: Optional[int],
+) -> None:
+    """Scan every row of the CSV for opening + closing balance markers and
+    fill them onto the report.
+
+    Strategy:
+      1. Look for rows that contain one of _OPENING_PHRASES / _CLOSING_PHRASES
+         AND a parseable Decimal — those are the explicit markers banks put
+         in the header / footer.
+      2. If we don't find explicit markers but every transaction row has a
+         running_balance, fall back to using the FIRST txn's running balance
+         (minus its impact) as opening, and the LAST txn's running balance
+         as closing.
+    """
+
+    def _row_text(row: list[str]) -> str:
+        return " ".join((c or "").strip() for c in row).lower()
+
+    def _row_amount(row: list[str]) -> Optional[Decimal]:
+        """Return the first non-zero Decimal in the row, or None."""
+        for cell in row:
+            v = _parse_amount(cell or "")
+            if v is not None and v != 0:
+                return v
+        return None
+
+    for row in rows:
+        if not row:
+            continue
+        text = _row_text(row)
+        if not text:
+            continue
+        if report.opening_balance is None and any(p in text for p in _OPENING_PHRASES):
+            amt = _row_amount(row)
+            if amt is not None:
+                report.opening_balance = amt
+        if report.closing_balance is None and any(p in text for p in _CLOSING_PHRASES):
+            amt = _row_amount(row)
+            if amt is not None:
+                report.closing_balance = amt
+
+    # Fallback — derive from running_balance on first and last parsed txns.
+    if drafts and balance_col is not None:
+        first = drafts[0]
+        last = drafts[-1]
+        if last.running_balance is not None and report.closing_balance is None:
+            report.closing_balance = last.running_balance
+        # For opening: reverse the FIRST transaction's effect on its balance.
+        # opening = first.running_balance ∓ first.amount, depending on direction.
+        if (
+            report.opening_balance is None
+            and first.running_balance is not None
+            and first.amount is not None
+        ):
+            if first.direction == "credit":
+                report.opening_balance = first.running_balance - first.amount
+            else:
+                report.opening_balance = first.running_balance + first.amount
+
+
+def _reconcile_balances(drafts: list[BankTxnDraft], report: ParseReport) -> None:
+    """Compute opening + Σ(credits) − Σ(debits) and compare with closing.
+
+    Sets:
+      report.computed_closing
+      report.balance_delta
+      report.reconciled       (True if |delta| ≤ ₹1 paisa)
+      report.parse_confidence (1.0 perfect; falls off with |delta| / |closing|)
+    """
+    if report.opening_balance is None or report.closing_balance is None:
+        # Nothing to reconcile — leave confidence at 1.0 but reconciled None.
+        # Caller / UI can show "no opening+closing markers — skipping check".
+        return
+
+    credits = sum(
+        (d.amount for d in drafts if d.direction == "credit"),
+        start=Decimal("0"),
+    )
+    debits = sum(
+        (d.amount for d in drafts if d.direction == "debit"),
+        start=Decimal("0"),
+    )
+    computed = report.opening_balance + credits - debits
+    delta = computed - report.closing_balance
+
+    report.computed_closing = computed
+    report.balance_delta = delta
+    # Tolerance: ₹0.01 (one paisa) — banks publish balances to 2dp.
+    report.reconciled = abs(delta) <= Decimal("0.01")
+
+    if report.reconciled:
+        report.parse_confidence = 1.0
+    else:
+        # Confidence scales with relative error vs the closing balance.
+        # |delta| == |closing| → 0.0; |delta| ≪ |closing| → ~1.0.
+        # Floor at 0.0 so big mismatches don't go negative.
+        denom = abs(report.closing_balance) or Decimal("1")
+        ratio = float(abs(delta) / denom)
+        report.parse_confidence = max(0.0, 1.0 - ratio)
+        report.errors.append(
+            f"balance check failed: opening {report.opening_balance:.2f} "
+            f"+ credits {credits:.2f} − debits {debits:.2f} = computed "
+            f"{computed:.2f}, but statement says closing "
+            f"{report.closing_balance:.2f} (off by {delta:+.2f})"
+        )
 
 
 class _RowError(ValueError):

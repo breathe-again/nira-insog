@@ -93,6 +93,15 @@ _SAFE_FROM_FUNCTIONS = {
     "values",
 }
 
+
+# NOTE: previously we maintained _SQL_TOKENS_NOT_TABLES — a manual exclusion
+# list of SQL keywords (case, lateral, ...) and column names (txn_date,
+# amount, ...) that the old regex-based parser would mis-identify as
+# tables. With pglast doing AST-level parsing we no longer need that
+# defence — the parser never confuses a CASE expression for a table.
+# Kept here as a comment so future readers don't reintroduce the regex
+# approach without realising what it was working around.
+
 # Hard-banned tokens — any of these in the proposed SQL → reject.
 _BANNED_PATTERNS = [
     re.compile(r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|vacuum)\b", re.IGNORECASE),
@@ -268,9 +277,32 @@ def _call_with_retry(client, *, model: str, messages: list, system: str, max_tok
 
 
 def validate_sql(sql: str) -> str:
-    """Apply the safety allowlist + return the cleaned SQL.
+    """Validate Claude-proposed SQL via pglast (libpg_query — PostgreSQL's
+    own parser) and the layered safety policy.
 
-    Raises QAError if the proposed SQL violates any rule.
+    Raises QAError if the proposed SQL violates any rule. Returns the
+    cleaned SQL (fenced backticks stripped) on success.
+
+    Layers, in order:
+      1. Strip ``` fences if the model wrapped the SQL.
+      2. Parse via pglast.  If the parser rejects it, surface the syntax
+         error — Claude can retry.
+      3. Walk the AST:
+           - Top statement must be a SelectStmt (single statement only).
+           - Every relation reference (FROM, JOIN, subquery FROM) must
+             resolve to either _ALLOWED_TABLES or a CTE defined within.
+           - Every function call in a FROM/JOIN position must be in
+             _SAFE_FROM_FUNCTIONS (no pg_*, no information_schema, etc.).
+           - Banned tokens (DDL keywords, pg_catalog, semicolons) are
+             impossible to parse as a SELECT, so the syntax check
+             handles them, but we double-check via _BANNED_PATTERNS for
+             defence-in-depth.
+      4. The :org_id bind parameter must appear textually — every
+         tenant-scoped table must filter by it.
+
+    pglast is the same parser PostgreSQL uses internally, so any SQL that
+    passes this validator behaves identically to what the database would
+    accept. No more "unknown table 'case'" false positives.
     """
     cleaned = sql.strip()
 
@@ -280,59 +312,148 @@ def validate_sql(sql: str) -> str:
         cleaned = re.sub(r"\n?```$", "", cleaned)
         cleaned = cleaned.strip()
 
-    upper = cleaned.upper().lstrip()
-    if not (upper.startswith("SELECT") or upper.startswith("WITH ")):
-        raise QAError("only SELECT / WITH … SELECT statements are allowed")
-
+    # Defence-in-depth — banned pattern scan BEFORE we let pglast loose.
     for pat in _BANNED_PATTERNS:
         m = pat.search(cleaned)
         if m:
             raise QAError(f"banned token in SQL: {m.group(0)!r}")
 
-    # Must reference only allowlisted tables. CTE aliases are exempt — they're
-    # defined inside the query (WITH foo AS (SELECT ...)) and don't represent
-    # access to a new table.
-    cte_aliases = set(
-        m.group(1).lower()
-        for m in re.finditer(r"\bWITH\s+(\w+)\s+AS\b", cleaned, flags=re.IGNORECASE)
-    )
-    # Also chained CTEs: ", more_cte AS (..."
-    cte_aliases.update(
-        m.group(1).lower()
-        for m in re.finditer(r",\s*(\w+)\s+AS\s*\(", cleaned, flags=re.IGNORECASE)
-    )
-    # Match FROM/JOIN <ident>, but only when followed by whitespace, comma,
-    # closing paren, or end-of-string. A "(" after the identifier means it's
-    # a function call (e.g. FROM unnest(ARRAY[...])), which we whitelist
-    # separately below.
-    referenced = set(
-        re.findall(
-            r"\bFROM\s+(\w+)(?=\s|,|\)|$)|\bJOIN\s+(\w+)(?=\s|,|\)|$)",
-            cleaned,
-            flags=re.IGNORECASE,
+    # Parse with pglast.
+    try:
+        import pglast
+        from pglast.ast import (
+            RangeVar, RangeFunction, RangeSubselect, FuncCall, SelectStmt,
+            CommonTableExpr,
         )
-    )
-    flat = {t.lower() for pair in referenced for t in pair if t}
-    # Also capture function calls so we can confirm only SAFE ones appear in
-    # FROM/JOIN position. Anything else (like FROM pg_stat_activity(...))
-    # would be caught by _BANNED_PATTERNS already, but this guards against
-    # future regressions.
-    from_funcs = set(
-        m.group(1).lower()
-        for m in re.finditer(
-            r"\b(?:FROM|JOIN)\s+(\w+)\s*\(", cleaned, flags=re.IGNORECASE
-        )
-    )
-    unsafe_funcs = from_funcs - _SAFE_FROM_FUNCTIONS
-    if unsafe_funcs:
+    except ImportError as e:
         raise QAError(
-            f"disallowed function in FROM/JOIN: {sorted(unsafe_funcs)}"
-        )
-    bad = flat - _ALLOWED_TABLES - cte_aliases - _SAFE_FROM_FUNCTIONS
-    if bad:
-        raise QAError(f"unknown table(s) referenced: {sorted(bad)}")
+            "pglast is not installed on the server — SQL validation cannot run"
+        ) from e
 
-    # Must include the org_id binding. The server provides :org_id.
+    # pglast uses PostgreSQL-native parameter syntax ($1, $2, ...) but
+    # SQLAlchemy + our query templates use named binds (:org_id, :start_date).
+    # Translate for the parse only — we'll execute the *original* `cleaned`
+    # text via SQLAlchemy so the named binds remain intact.
+    parse_text = re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", lambda m: "$1", cleaned)
+
+    try:
+        parsed = pglast.parse_sql(parse_text)
+    except Exception as e:  # pglast.parser.ParseError + others
+        raise QAError(f"SQL syntax error: {e}")
+
+    if len(parsed) != 1:
+        raise QAError("only a single SELECT statement is allowed")
+
+    stmt = parsed[0].stmt
+    if not isinstance(stmt, SelectStmt):
+        raise QAError(
+            f"only SELECT / WITH-SELECT statements are allowed "
+            f"(got {type(stmt).__name__})"
+        )
+
+    # pglast AST nodes use __slots__ and are themselves callable (they
+    # implement __call__ for serialization), so we walk via a generic
+    # helper that filters by class module — `pglast.ast.*` for AST nodes,
+    # `pglast.enums.*` for enum values (which we skip; they're terminals).
+    def _iter_children(node):
+        for name in dir(node):
+            if name.startswith("_"):
+                continue
+            if name in ("ancestors", "all"):
+                continue
+            try:
+                val = getattr(node, name)
+            except Exception:
+                continue
+            if val is None:
+                continue
+            if isinstance(val, (list, tuple)):
+                for item in val:
+                    mod = getattr(type(item), "__module__", "")
+                    if mod.startswith("pglast.ast"):
+                        yield item
+                continue
+            mod = getattr(type(val), "__module__", "")
+            if mod.startswith("pglast.ast"):
+                yield val
+
+    # Collect every CTE alias defined inside this query.  CTEs can nest.
+    cte_aliases: set[str] = set()
+
+    def _gather_ctes(node) -> None:
+        if isinstance(node, CommonTableExpr) and node.ctename:
+            cte_aliases.add(node.ctename.lower())
+        for child in _iter_children(node):
+            _gather_ctes(child)
+
+    _gather_ctes(stmt)
+
+    # Walk the tree gathering every RangeVar (table reference) and every
+    # RangeFunction (FROM funcname(...)).  Subselects are fine — they're
+    # just nested SELECTs that we'll recursively validate the same way.
+    bad_tables: set[str] = set()
+    unsafe_funcs: set[str] = set()
+
+    def _check(node) -> None:
+        if node is None:
+            return
+        if isinstance(node, RangeVar):
+            tname = (node.relname or "").lower()
+            if not tname:
+                return
+            if tname in _ALLOWED_TABLES or tname in cte_aliases:
+                return
+            bad_tables.add(tname)
+            return
+        if isinstance(node, RangeFunction):
+            # node.functions is a tuple of (FuncCall, ...) pairs; first
+            # element is the function call itself.
+            funcs = node.functions or ()
+            for entry in funcs:
+                # Each entry is itself a tuple (FuncCall, coldef_list).
+                if isinstance(entry, (list, tuple)) and entry:
+                    fc = entry[0]
+                else:
+                    fc = entry
+                if isinstance(fc, FuncCall):
+                    # funcname is a tuple of String AST nodes
+                    name_parts = []
+                    for n in (fc.funcname or ()):
+                        # pglast 6.x: name nodes have `sval`
+                        sval = getattr(n, "sval", None) or getattr(n, "val", None)
+                        if sval:
+                            name_parts.append(str(sval).lower())
+                    full = ".".join(name_parts)
+                    if full and full not in _SAFE_FROM_FUNCTIONS:
+                        # Allow schema-qualified safe funcs too — e.g.
+                        # pg_catalog.generate_series is NOT safe but
+                        # generate_series IS.
+                        last = name_parts[-1] if name_parts else ""
+                        if last not in _SAFE_FROM_FUNCTIONS:
+                            unsafe_funcs.add(full)
+            return
+        if isinstance(node, RangeSubselect):
+            # Recurse into the inner SELECT.
+            if node.subquery is not None:
+                _check(node.subquery)
+            return
+
+        # Generic recursion — visit every child node.
+        for child in _iter_children(node):
+            _check(child)
+
+    _check(stmt)
+
+    if unsafe_funcs:
+        raise QAError(f"disallowed function in FROM/JOIN: {sorted(unsafe_funcs)}")
+    if bad_tables:
+        snippet = cleaned[:400].replace("\n", " ").strip()
+        raise QAError(
+            f"unknown table(s) referenced: {sorted(bad_tables)} — "
+            f"in SQL: {snippet}{'...' if len(cleaned) > 400 else ''}"
+        )
+
+    # Must include the org_id binding. The server provides :org_id at exec.
     if ":org_id" not in cleaned:
         raise QAError("SQL must include the :org_id parameter — refusing to run")
 

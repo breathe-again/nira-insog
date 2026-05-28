@@ -125,7 +125,14 @@ def _run_pipeline(db: Session, doc: Document) -> dict:
         return _run_bank_csv(db, doc)
     if doc.file_type == "tally":
         return _run_tally_xml(db, doc)
-    if doc.file_type in {"pdf", "image", "xlsx", "html"}:
+    if doc.file_type == "xlsx":
+        # Peek inside: is it a Tally Trial Balance? If yes, route to the
+        # canonical-ledger connector (Phase 2). Otherwise fall through to
+        # the generic XLSX extractor.
+        if _is_tally_trial_balance_xlsx(doc):
+            return _run_tally_trial_balance(db, doc)
+        return _run_extracted(db, doc)
+    if doc.file_type in {"pdf", "image", "html"}:
         return _run_extracted(db, doc)
 
     # Unknown file type — record a stub extraction and move on.
@@ -169,7 +176,10 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
         db.commit()
         return {"entities_created": 0, "rows_parsed": 0, "errors": len(report.errors)}
 
-    # Stage 2: extracted — record the raw parse summary.
+    # Stage 2: extracted — record the raw parse summary including the
+    # balance-reconciliation check (P2).  If reconciliation fails, the doc
+    # lands with a low parse_confidence; the inbox surfaces a "Review parse"
+    # badge so the user can audit before trusting the data.
     doc.document_type = "bank_statement"
     doc.raw_extraction_json = {
         "kind": "bank_csv",
@@ -178,6 +188,23 @@ def _run_bank_csv(db: Session, doc: Document) -> dict:
         "rows_skipped": report.rows_skipped,
         "errors": report.errors[:20],
         "sample": [d.as_dict() for d in drafts[:3]],
+        # Balance reconciliation block — serialized as JSON-safe primitives.
+        "reconciliation": {
+            "opening_balance": (
+                str(report.opening_balance) if report.opening_balance is not None else None
+            ),
+            "closing_balance": (
+                str(report.closing_balance) if report.closing_balance is not None else None
+            ),
+            "computed_closing": (
+                str(report.computed_closing) if report.computed_closing is not None else None
+            ),
+            "delta": (
+                str(report.balance_delta) if report.balance_delta is not None else None
+            ),
+            "reconciled": report.reconciled,
+        },
+        "parse_confidence": report.parse_confidence,
     }
     doc.status = "extracted"
     db.commit()
@@ -391,12 +418,131 @@ def _run_tally_xml(db: Session, doc: Document) -> dict:
     doc.status = "understood"
     db.commit()
 
+    # Stage 3d (Phase-2 dual-write): post each Day Book row into the
+    # canonical ledger as a balanced movement entry — IF the tenant has
+    # opted in via the per-tenant feature flag. Disabled by default
+    # because period coordination with Trial Balance opening balances
+    # needs careful tuning (TB closing already includes the Day Book
+    # movements — naive dual-write would double-count).
+    #
+    # Tracking: ARCHITECTURE_PLAN.md → C1b. Will be flipped on per tenant
+    # once we have a clear "TB-as-opening vs TB-as-closing" indicator on
+    # uploads, plus reconciliation_findings emission for mismatches.
+    try:
+        from services.tenant_settings import is_feature_enabled
+
+        if is_feature_enabled(db, doc.org_id, "canonical_day_book", default=False):
+            from services.canonical import _post_day_book_to_canonical  # type: ignore[attr-defined]
+
+            _post_day_book_to_canonical(db, doc, parsed, inserted_txns)
+    except Exception:  # noqa: BLE001
+        # The canonical dual-write must never break the legacy pipeline.
+        logger.exception("Day Book canonical dual-write failed; legacy data preserved")
+
     return {
         "entities_created": len(inserted_txns) + inserted_invoices,
         "bank_txns": len(inserted_txns),
         "invoices": inserted_invoices,
         "vouchers_skipped": len(parsed.skipped),
         "anomalies": anomalies_emitted,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tally Trial Balance (XLSX) path — canonical ledger ingestion (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _is_tally_trial_balance_xlsx(doc: Document) -> bool:
+    """Cheap detection: does this XLSX look like a Tally Trial Balance?
+
+    We accept either:
+      * Filename hints — anything matching "trial[\\s-]?bal" / "TrialBal" /
+        "trialbalance" / "balance sheet (tally)"
+      * Content hints — A1 contains the company name + A4 starts with
+        "Trial Balance"
+
+    Filename check is O(1); content check opens the workbook only when
+    the filename is generic ("export.xlsx"). The bytes are not retained.
+    """
+    fname = (doc.original_filename or "").lower()
+    if any(kw in fname for kw in ("trialbal", "trial bal", "trial-bal", "trial_bal")):
+        return True
+
+    try:
+        import openpyxl
+
+        with open_document(doc.file_url, doc.encryption_meta) as path:
+            if not path.exists():
+                return False
+            wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+            ws = wb.active
+            if ws is None:
+                return False
+            # First five rows for header signature
+            for r in range(1, 6):
+                cell = ws.cell(row=r, column=1).value
+                if cell and "trial balance" in str(cell).lower():
+                    return True
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _run_tally_trial_balance(db: Session, doc: Document) -> dict:
+    """Ingest a Tally Trial Balance XLSX into the canonical ledger.
+
+    Delegates parsing + posting to the
+    `services.connectors.tally_trial_balance` connector. We bridge to
+    that connector here so the upload pipeline + Celery retries +
+    document state machine all keep working unchanged.
+    """
+    from services.connectors.tally_trial_balance import ingest_trial_balance_xlsx
+
+    with open_document(doc.file_url, doc.encryption_meta) as path:
+        if not path.exists():
+            raise FileNotFoundError(f"file not on disk: {doc.file_url}")
+        path_str = str(path)
+
+        result = ingest_trial_balance_xlsx(
+            db,
+            org_id=doc.org_id,
+            file_path=path_str,
+            document_id=doc.id,
+            entity_id=doc.entity_id,
+            display_name=f"Tally Trial Balance ({doc.original_filename or 'upload'})",
+            original_filename=doc.original_filename,
+        )
+
+    # Mirror result into the document row so the inbox shows what happened.
+    doc.document_type = "trial_balance"
+    doc.raw_extraction_json = {
+        "kind": "tally_trial_balance",
+        "rows_processed": result.detail.get("rows_processed", 0),
+        "accounts_upserted": result.accounts_upserted,
+        "transactions_written": result.transactions_written,
+        "ledger_entries_written": result.ledger_entries_written,
+        "total_debit": result.detail.get("total_debit"),
+        "total_credit": result.detail.get("total_credit"),
+        "company_name": result.detail.get("company_name"),
+        "period_text": result.detail.get("period_text"),
+        "as_of": result.detail.get("as_of"),
+        "suspense_count": result.detail.get("suspense_count", 0),
+        "suspense_samples": result.detail.get("suspense_samples", []),
+        "errors": result.errors[:20],
+    }
+    doc.status = "extracted"
+    db.commit()
+    doc.status = "understood"
+    db.commit()
+    doc.status = "indexed"
+    doc.processed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {
+        "entities_created": result.accounts_upserted,
+        "transactions": result.transactions_written,
+        "ledger_entries": result.ledger_entries_written,
+        "errors": len(result.errors),
     }
 
 

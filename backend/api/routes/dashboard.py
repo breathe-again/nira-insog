@@ -4,12 +4,21 @@ Aggregates over BankTransaction, Invoice, Receipt, Vendor, Client, Insight to
 produce the same shape the demo data uses, so the frontend can swap the data
 source without touching its rendering code.
 
+Phase-2 cutover (canonical ledger). KPIs use a canonical-first read with
+fallback to the old bottom-up tables. Once a customer uploads their Tally
+Trial Balance, cash/receivables/payables auto-switch from "what we saw in
+bank statements" to "what the books actually say". The
+`services.canonical.dashboard_kpis` helper makes this transparent.
+
 Heuristics used (deliberately simple — refinements come later):
 
-- **Cash position** = latest running_balance across bank_transactions. Falls
+- **Cash position** = canonical ledger sum across cash + bank accounts when
+  available, else latest running_balance across bank_transactions. Falls
   back to sum(credit) − sum(debit) if no balance is recorded.
-- **Receivables** = sum of sales invoice totals where status != 'paid'.
-- **Payables**   = sum of purchase invoice totals where status != 'paid'.
+- **Receivables** = canonical Sundry Debtors aggregate when available, else
+  sum of sales invoice totals where status != 'paid'.
+- **Payables** = canonical Sundry Creditors aggregate when available, else
+  sum of purchase invoice totals where status != 'paid'.
 - **Net flow MTD** = month-to-date credits − debits.
 - **Cash flow chart** = per-day inflow/outflow for the last 30 days.
 - **Expense breakdown** = bucket bank_transactions (debits) into a small set
@@ -367,55 +376,28 @@ def dashboard_summary(
         prev_window_end = thirty_days_ago
 
     # ------------ KPI: Cash position ------------
-    latest_balance_row = db.execute(
-        select(BankTransaction.running_balance)
-        .where(
-            BankTransaction.org_id == org_id,
-            BankTransaction.running_balance.isnot(None),
-        )
-        .order_by(desc(BankTransaction.txn_date), desc(BankTransaction.created_at))
-        .limit(1)
-    ).first()
-    cash_now = Decimal(latest_balance_row[0]) if latest_balance_row else Decimal("0")
+    # Phase 2: canonical-first with bottom-up fallback. When the canonical
+    # ledger has cash/bank accounts (i.e. user uploaded their Trial
+    # Balance), we read truth from there. Otherwise we keep the old
+    # bank_transactions running_balance behaviour for backwards compat.
+    from services.canonical import dashboard_kpis as kpi_helpers
 
-    # Prior-period balance: balance as of 30 days ago.
-    prev_balance_row = db.execute(
-        select(BankTransaction.running_balance)
-        .where(
-            BankTransaction.org_id == org_id,
-            BankTransaction.running_balance.isnot(None),
-            BankTransaction.txn_date < thirty_days_ago,
-        )
-        .order_by(desc(BankTransaction.txn_date), desc(BankTransaction.created_at))
-        .limit(1)
-    ).first()
-    cash_prev = Decimal(prev_balance_row[0]) if prev_balance_row else cash_now
+    cash_now = kpi_helpers.get_cash_position(db, org_id=org_id, as_of=today)
+    cash_prev = kpi_helpers.get_cash_position(
+        db, org_id=org_id, as_of=thirty_days_ago
+    )
 
-    # If we never recorded balance, fall back to net cumulative.
-    if cash_now == 0 and bank_txn_count:
-        net_all = db.execute(
-            select(
-                func.coalesce(
-                    func.sum(
-                        BankTransaction.amount * (-1 if False else 1)  # placeholder
-                    ),
-                    0,
-                )
-            )
-        ).scalar()  # not used; will use explicit credit/debit sums:
-        credits = db.scalar(
-            select(func.coalesce(func.sum(BankTransaction.amount), 0))
-            .where(BankTransaction.org_id == org_id, BankTransaction.direction == "credit")
-        ) or 0
-        debits = db.scalar(
-            select(func.coalesce(func.sum(BankTransaction.amount), 0))
-            .where(BankTransaction.org_id == org_id, BankTransaction.direction == "debit")
-        ) or 0
-        cash_now = Decimal(credits) - Decimal(debits)
-        _ = net_all
+    # ------------ KPI: Receivables ------------
+    # Canonical first (Sundry Debtors aggregate), else open sales invoices.
+    receivables_now = kpi_helpers.get_receivables(db, org_id=org_id, as_of=today)
+    receivables_prev = kpi_helpers.get_receivables(
+        db, org_id=org_id, as_of=thirty_days_ago
+    )
 
-    # ------------ KPI: Receivables (unpaid sales invoices) ------------
-    receivables_now = Decimal(
+    # Legacy variables kept for the rest of the file's invoice-driven
+    # widgets (aging buckets, vendor breakdown, etc.). These are pure
+    # invoice queries that don't have a canonical equivalent yet.
+    _legacy_recv = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(Invoice.total), 0)).where(
                 Invoice.org_id == org_id,
@@ -425,8 +407,7 @@ def dashboard_summary(
         )
         or 0
     )
-    # Prior period: invoices issued before 30 days ago, still unpaid then.
-    receivables_prev = Decimal(
+    _legacy_recv_prev = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(Invoice.total), 0)).where(
                 Invoice.org_id == org_id,
@@ -438,8 +419,12 @@ def dashboard_summary(
         or 0
     )
 
-    # ------------ KPI: Payables (unpaid purchase invoices) ------------
-    payables_now = Decimal(
+    # ------------ KPI: Payables ------------
+    payables_now = kpi_helpers.get_payables(db, org_id=org_id, as_of=today)
+    payables_prev = kpi_helpers.get_payables(
+        db, org_id=org_id, as_of=thirty_days_ago
+    )
+    _legacy_pay = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(Invoice.total), 0)).where(
                 Invoice.org_id == org_id,
@@ -449,7 +434,7 @@ def dashboard_summary(
         )
         or 0
     )
-    payables_prev = Decimal(
+    _legacy_pay_prev = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(Invoice.total), 0)).where(
                 Invoice.org_id == org_id,

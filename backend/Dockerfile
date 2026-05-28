@@ -16,6 +16,16 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt ./
+
+# Install CPU-only torch FIRST, from the PyTorch CPU index. Without this
+# pip grabs the GPU build which bundles the entire NVIDIA CUDA stack
+# (cublas, cudnn, cuFFT, cuSPARSE, cuSOLVER, nccl, triton, ...) — close
+# to 2 GB of wheels we never use. Pre-installing CPU torch first means
+# sentence-transformers picks it up as already-satisfied and pip skips
+# the GPU pull entirely. Keeps the worker image ~250 MB instead of ~3 GB.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu \
+        "torch==2.4.1"
+
 RUN pip install -r requirements.txt
 
 # Pre-download the sentence-transformers model so the image is self-contained

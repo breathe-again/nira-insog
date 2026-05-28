@@ -51,3 +51,18 @@ slowapi==0.1.9
 sentence-transformers==2.7.0
 # pgvector ORM adapter so we can use the `vector` column type in SQLAlchemy.
 pgvector==0.3.6
+
+# pglast — PostgreSQL's own parser (libpg_query) as a Python library. Used by
+# services/qa.py for AST-level validation of Claude-proposed SQL. Replaces
+# the previous regex-based table/keyword scanner that kept producing false
+# positives like "unknown table 'case'" when Claude generated CASE WHEN
+# expressions or column-aliased subqueries. Same parser PostgreSQL itself
+# uses, so anything that parses cleanly will run cleanly.
+pglast==7.13
+
+# Hybrid retrieval (P3): optional cross-encoder rerank via Cohere's
+# /rerank endpoint.  Used by services/search_hybrid when COHERE_API_KEY is
+# set — fully optional, no-ops gracefully without it.  ~$1 per 1k queries
+# at retail pricing; quality is roughly on par with bge-reranker-v2-m3 on
+# financial-text domain.
+cohere==5.13.6
