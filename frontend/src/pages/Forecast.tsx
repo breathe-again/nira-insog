@@ -36,7 +36,6 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   CalendarClock,
-  Info,
   Loader2,
   RefreshCw,
   TrendingDown,
@@ -117,18 +116,19 @@ export default function Forecast() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <TopBar />
+      <TopBar
+        title="13-week cash forecast"
+        subtitle="Projects your cash position over the next 91 days using recurring patterns, open invoices, and the Indian tax calendar."
+      />
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold text-slate-900">
-              13-week cash forecast
+              Pessimistic · Likely · Optimistic
             </h1>
             <p className="mt-1 max-w-2xl text-sm text-slate-600">
-              Projects your cash position over the next 91 days using your
-              recurring patterns, open invoices, and the Indian tax
-              calendar. Pessimistic / likely / optimistic bands reflect AR
-              lateness, AP stretching, and amount variability.
+              Bands reflect AR lateness, AP stretching, and amount variability
+              weighted by confidence in each driver.
             </p>
           </div>
           <button
@@ -163,14 +163,14 @@ export default function Forecast() {
           <EmptyState
             title="No forecast yet"
             description="Click 'Generate forecast' above to build your first 13-week cash projection. It runs in a few seconds — we'll pull in your recurring patterns, open invoices, and tax calendar."
-            icon={Wallet}
+            Icon={Wallet}
           />
         ) : (
           <>
             <HeadlineStrip forecast={forecast} />
             <SectionCard
               title="Cash trajectory — next 91 days"
-              subtitle={`As of ${formatDate(forecast.as_of_date)}. Three scenarios shaded; today's cash is ${formatINR(forecast.starting_cash_inr)}.`}
+              subtitle={`As of ${formatDate(forecast.as_of_date)}. Three scenarios shaded; today's cash is ${formatINR(Number(forecast.starting_cash_inr))}.`}
             >
               <ForecastChart points={forecast.points} />
             </SectionCard>
@@ -213,14 +213,14 @@ function HeadlineStrip({ forecast }: { forecast: CashForecastOut }) {
       />
       <KpiTile
         label="Total inflows expected"
-        value={formatINR(forecast.inflows_total_inr)}
+        value={formatINR(Number(forecast.inflows_total_inr))}
         sub={`From ${forecast.drivers_count} drivers`}
         icon={ArrowDownToLine}
         accent="emerald"
       />
       <KpiTile
         label="Total outflows expected"
-        value={formatINR(forecast.outflows_total_inr)}
+        value={formatINR(Number(forecast.outflows_total_inr))}
         icon={ArrowUpToLine}
         accent="rose"
       />
@@ -461,7 +461,7 @@ function DriverList({
                 </div>
               </div>
               <div className="ml-3 text-sm font-semibold tabular-nums">
-                {formatINR(d.expected_amount_inr)}
+                {formatINR(Number(d.expected_amount_inr))}
               </div>
             </li>
           ))}
