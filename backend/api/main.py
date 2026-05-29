@@ -47,6 +47,7 @@ from .routes.auth import router as auth_router
 from .routes.dashboard import router as dashboard_router
 from .routes.documents import router as documents_router
 from .routes.feedback import router as feedback_router
+from .routes.forecast import router as forecast_router
 from .routes.insights import router as insights_router
 from .routes.learning import router as learning_router
 from .routes.qa import router as qa_router
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(qa_router)
     app.include_router(search_router)
     app.include_router(tax_router)
+    app.include_router(forecast_router)
     app.include_router(team_router)
     app.include_router(team_public_router)
 

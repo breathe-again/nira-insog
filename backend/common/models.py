@@ -1079,3 +1079,144 @@ class ApprovalAction(Base):
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     acted_at: Mapped[datetime] = _ts_now()
+
+
+# ===========================================================================
+# CASH FORECAST (migration 0009)
+# ===========================================================================
+#
+# 13-week (91-day) rolling cash forecast — Nira's headline finance-team
+# differentiator. Mid-market CFOs treat this as the single most important
+# screen in any tool. Three rows per day (pessimistic / likely / optimistic),
+# each "run" snapshots the inputs so historical accuracy can be measured.
+# ===========================================================================
+
+
+class CashForecastRun(Base):
+    __tablename__ = "cash_forecast_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entities.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
+    horizon_days: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=91, server_default="91"
+    )
+    starting_cash_inr: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    source_systems_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    config_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    drivers_count: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
+    inflows_total_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    outflows_total_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    ending_cash_likely_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    ending_cash_pessimistic_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    ending_cash_optimistic_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    runway_zero_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="ok", server_default="ok"
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    generated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    trigger: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+    created_at: Mapped[datetime] = _ts_now()
+
+
+class CashForecastPoint(Base):
+    __tablename__ = "cash_forecast_points"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cash_forecast_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    point_date: Mapped[date] = mapped_column(Date, nullable=False)
+    days_from_now: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    cash_pessimistic_inr: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    cash_likely_inr: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    cash_optimistic_inr: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    inflow_likely_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    outflow_likely_inr: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    actual_cash_inr: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(20, 2), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts_now()
+
+
+class ForecastDriver(Base):
+    """A specific projected inflow or outflow that fed into the forecast.
+
+    Surfaces in the "Why this forecast?" panel so a non-technical CFO can
+    see WHY the line moves on a particular day. Examples:
+      - "Salary — ₹4.2 L on Jul 1 (recurring, last 8 months avg)"
+      - "Customer Acme — ₹85 K expected by Jul 10 (invoice INV-203 due Jul 5, 7d avg lag)"
+      - "Advance tax Q2 — ₹2.5 L on Sep 15 (tax calendar)"
+    """
+
+    __tablename__ = "forecast_drivers"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cash_forecast_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    vendor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vendors.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    client_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("clients.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    expected_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expected_amount_inr: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    confidence: Mapped[Decimal] = mapped_column(
+        Numeric(4, 3), nullable=False, default=Decimal("0.7"), server_default="0.7"
+    )
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_recurring_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("recurring_patterns.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_invoice_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    supporting_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = _ts_now()

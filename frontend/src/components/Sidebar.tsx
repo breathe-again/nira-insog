@@ -5,6 +5,7 @@ import {
   Copy,
   Inbox,
   LayoutDashboard,
+  LineChart,
   LogOut,
   type LucideIcon,
   MessageSquare,
@@ -34,6 +35,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { to: "/insights", label: "Insights", Icon: Sparkles },
       { to: "/learning", label: "Learning", Icon: Brain },
       { to: "/tax", label: "Tax", Icon: Receipt },
+      { to: "/forecast", label: "Forecast", Icon: LineChart, badge: "NEW" },
     ],
   },
   {

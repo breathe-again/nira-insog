@@ -236,6 +236,19 @@ export const api = {
 
   tdsDraft: () => request<TDSDraftOut>("/api/tax/tds-draft"),
 
+  // ---------- Cash forecast ----------
+  getCashForecast: () =>
+    request<CashForecastOut | null>("/api/forecast/cash"),
+  runCashForecast: (horizonDays = 91) =>
+    request<CashForecastOut>(
+      `/api/forecast/cash/run?horizon_days=${horizonDays}`,
+      { method: "POST" },
+    ),
+  getForecastDrivers: (kind?: string) =>
+    request<ForecastDriverOut[]>(
+      `/api/forecast/cash/drivers${kind ? `?kind=${kind}` : ""}`,
+    ),
+
   // ---------- Org edit ----------
   patchOrg: (body: { name?: string }) =>
     request<AuthMeOut>("/api/auth/org", {

@@ -304,6 +304,58 @@ export interface TDSDraftOut {
   total_tds_estimated: string | number;
 }
 
+// ---------- Cash forecast ----------
+
+export interface CashForecastPointOut {
+  date: string;            // YYYY-MM-DD
+  days_from_now: number;
+  pessimistic: string;     // INR, stored as string to preserve Decimal precision
+  likely: string;
+  optimistic: string;
+  inflow: string;          // inflow on this day (likely scenario)
+  outflow: string;
+  actual: string | null;   // back-filled once date passes
+}
+
+export interface CashForecastOut {
+  run_id: string;
+  as_of_date: string;
+  horizon_days: number;
+  starting_cash_inr: string;
+  ending_cash_likely_inr: string;
+  ending_cash_pessimistic_inr: string;
+  ending_cash_optimistic_inr: string;
+  runway_zero_date: string | null;
+  drivers_count: number;
+  inflows_total_inr: string;
+  outflows_total_inr: string;
+  created_at: string;
+  points: CashForecastPointOut[];
+}
+
+export type ForecastDriverKind =
+  | "recurring_inflow"
+  | "recurring_outflow"
+  | "open_receivable"
+  | "open_payable"
+  | "scheduled_tax"
+  | "opening_balance"
+  | "one_off";
+
+export interface ForecastDriverOut {
+  id: string;
+  kind: ForecastDriverKind;
+  label: string;
+  direction: "inflow" | "outflow";
+  expected_date: string | null;
+  expected_amount_inr: string;
+  confidence: string;
+  source_kind: string;
+  vendor_id: string | null;
+  client_id: string | null;
+  supporting_data: Record<string, unknown> | null;
+}
+
 // ---------- Sessions + Team ----------
 
 export interface SessionInfoOut {
