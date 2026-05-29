@@ -121,13 +121,35 @@ class DriverDraft:
 
         Only affects AR / AP — recurring patterns and scheduled events
         stay on their expected date across scenarios (rent is rent).
+
+        Important: only shift NOT-YET-OVERDUE invoices. Once an invoice
+        is overdue, its expected_date has already been pushed forward by
+        the collection-window heuristic in _collect_invoice_drivers; we
+        don't double-shift. Otherwise overdue receivables in the
+        optimistic scenario would cluster at day 0 (creating a fake
+        ₹1.6 Cr spike).
+
+        The is_overdue check uses supporting_data.days_overdue which the
+        invoice collector populates.
         """
+        days_overdue = 0
+        if self.supporting_data:
+            days_overdue = int(self.supporting_data.get("days_overdue", 0) or 0)
+
         if self.kind == "open_receivable":
+            if days_overdue > 0:
+                # Already-late receivables: don't shift further in any
+                # scenario — the heuristic already encoded the uncertainty.
+                return self.expected_date
             if scenario == "pessimistic":
                 return self.expected_date + timedelta(days=RECEIVABLE_LATENESS_PESSIMISTIC)
             if scenario == "optimistic":
                 return self.expected_date + timedelta(days=RECEIVABLE_LATENESS_OPTIMISTIC)
         elif self.kind == "open_payable":
+            if days_overdue > 0:
+                # Overdue payables: assume we'll pay them in the
+                # collection window already set; don't push them further.
+                return self.expected_date
             if scenario == "pessimistic":
                 return self.expected_date  # pay on time (worse for cash)
             if scenario == "optimistic":
@@ -454,19 +476,52 @@ def _bucket_drivers_by_day(
 
     Drivers shift their date/amount according to scenario rules; days
     outside the horizon are clipped.
+
+    AR/AP drivers are SMOOTHED — instead of landing all on the expected
+    date (which produces step-function chart shapes), they distribute
+    across a 5-day triangular window centered on the expected date.
+    This better reflects reality: customers don't all pay on day-30
+    exactly, payroll batches don't fire on a single Tuesday for everyone.
+
+    Recurring patterns (salary, rent, fixed SaaS) and tax deadlines
+    STAY on their expected date — those genuinely are single-day events.
     """
     horizon_end = today + timedelta(days=horizon_days)
     buckets: dict[date, tuple[Decimal, Decimal]] = {}
     for draft in drafts:
-        d = draft.date_for_scenario(scenario)
-        if not (today <= d <= horizon_end):
-            continue
+        center = draft.date_for_scenario(scenario)
         amt = draft.amount_for_scenario(scenario)
-        cur_in, cur_out = buckets.get(d, (Decimal("0"), Decimal("0")))
-        if draft.direction == "inflow":
-            buckets[d] = (cur_in + amt, cur_out)
+
+        # Decide whether to smooth this driver across days
+        should_smooth = draft.kind in ("open_receivable", "open_payable")
+
+        if should_smooth:
+            # Triangular kernel: weights [1, 2, 3, 2, 1] / 9 over 5 days
+            # centered on `center`. Splits the amount across days that fall
+            # within the horizon.
+            weights = [(center + timedelta(days=offset), w)
+                       for offset, w in zip((-2, -1, 0, 1, 2), (1, 2, 3, 2, 1))]
+            # Drop days outside horizon and renormalise
+            in_horizon = [(d, w) for d, w in weights if today <= d <= horizon_end]
+            if not in_horizon:
+                continue
+            total_weight = sum(w for _, w in in_horizon)
+            for d, w in in_horizon:
+                share = amt * Decimal(w) / Decimal(total_weight)
+                cur_in, cur_out = buckets.get(d, (Decimal("0"), Decimal("0")))
+                if draft.direction == "inflow":
+                    buckets[d] = (cur_in + share, cur_out)
+                else:
+                    buckets[d] = (cur_in, cur_out + share)
         else:
-            buckets[d] = (cur_in, cur_out + amt)
+            # Single-day driver (salary, rent, tax deadline)
+            if not (today <= center <= horizon_end):
+                continue
+            cur_in, cur_out = buckets.get(center, (Decimal("0"), Decimal("0")))
+            if draft.direction == "inflow":
+                buckets[center] = (cur_in + amt, cur_out)
+            else:
+                buckets[center] = (cur_in, cur_out + amt)
     return buckets
 
 

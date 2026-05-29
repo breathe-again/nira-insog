@@ -70,7 +70,9 @@ def _mk(kind, direction="outflow", amount=1000, days=10, confidence=0.7):
 
 
 def test_receivable_pessimistic_pushes_date_later():
+    # Not-yet-overdue invoice — should shift later in pessimistic.
     d = _mk("open_receivable", direction="inflow", days=0)
+    d.supporting_data = {"days_overdue": 0}
     assert d.date_for_scenario("pessimistic") == d.expected_date + timedelta(
         days=RECEIVABLE_LATENESS_PESSIMISTIC
     )
@@ -78,6 +80,7 @@ def test_receivable_pessimistic_pushes_date_later():
 
 def test_receivable_optimistic_pulls_date_earlier():
     d = _mk("open_receivable", direction="inflow", days=20)
+    d.supporting_data = {"days_overdue": 0}
     assert d.date_for_scenario("optimistic") == d.expected_date + timedelta(
         days=RECEIVABLE_LATENESS_OPTIMISTIC
     )
@@ -85,9 +88,21 @@ def test_receivable_optimistic_pulls_date_earlier():
 
 def test_payable_optimistic_stretches_date():
     d = _mk("open_payable")
+    d.supporting_data = {"days_overdue": 0}
     assert d.date_for_scenario("optimistic") == d.expected_date + timedelta(
         days=PAYABLE_STRETCH_OPTIMISTIC
     )
+
+
+def test_overdue_receivable_does_not_shift_in_optimistic():
+    """Regression: overdue invoices used to cluster at day 0 in optimistic
+    because we'd shift them earlier even though they were already late.
+    Fix: don't shift overdue invoices in either direction."""
+    d = _mk("open_receivable", direction="inflow", days=10)
+    d.supporting_data = {"days_overdue": 30}  # 30 days late
+    assert d.date_for_scenario("optimistic") == d.expected_date
+    assert d.date_for_scenario("pessimistic") == d.expected_date
+    assert d.date_for_scenario("likely") == d.expected_date
 
 
 def test_recurring_does_not_shift_date():
@@ -232,7 +247,11 @@ def test_bucket_clips_past_today():
 
 
 def test_bucket_scenarios_differ_for_receivables():
-    """Pessimistic scenario should push AR to a later day than optimistic."""
+    """Pessimistic scenario should push AR to a later day than optimistic.
+
+    Since AR now smooths across a 5-day window, we compare the CENTRE of
+    each scenario's distribution (max-amount day) rather than the only day.
+    """
     today = date(2026, 6, 1)
     drafts = [
         DriverDraft(
@@ -243,15 +262,43 @@ def test_bucket_scenarios_differ_for_receivables():
             direction="inflow",
             confidence=Decimal("0.85"),
             source_kind="invoice",
+            supporting_data={"days_overdue": 0},
         ),
     ]
     pess = _bucket_drivers_by_day(drafts, today, 91, "pessimistic")
     likely = _bucket_drivers_by_day(drafts, today, 91, "likely")
     opt = _bucket_drivers_by_day(drafts, today, 91, "optimistic")
-    pess_date = next(iter(pess.keys()))
-    likely_date = next(iter(likely.keys()))
-    opt_date = next(iter(opt.keys()))
-    assert pess_date > likely_date > opt_date
+
+    def peak_day(buckets: dict) -> date:
+        return max(buckets.keys(), key=lambda d: buckets[d][0] + buckets[d][1])
+
+    assert peak_day(pess) > peak_day(likely) > peak_day(opt)
+
+
+def test_smoothed_receivable_spreads_across_window():
+    """A receivable should distribute across 5 days, not land on 1."""
+    today = date(2026, 6, 1)
+    drafts = [
+        DriverDraft(
+            kind="open_receivable",
+            label="Big invoice",
+            expected_date=date(2026, 6, 15),
+            expected_amount_inr=Decimal("100000"),
+            direction="inflow",
+            confidence=Decimal("0.85"),
+            source_kind="invoice",
+            supporting_data={"days_overdue": 0},
+        ),
+    ]
+    buckets = _bucket_drivers_by_day(drafts, today, 91, "likely")
+    # Should occupy 5 consecutive days (10-14 around the centered day 12)
+    assert len(buckets) == 5
+    # Total inflow should still sum to the original amount (within rounding)
+    total_inflow = sum(b[0] for b in buckets.values())
+    assert abs(total_inflow - Decimal("100000")) < Decimal("0.01")
+    # Centre day should have the largest share (weight 3 / total 9)
+    centre_inflow = buckets[date(2026, 6, 15)][0]
+    assert centre_inflow == Decimal("100000") * Decimal(3) / Decimal(9)
 
 
 # -----------------------------------------------------------------------------
